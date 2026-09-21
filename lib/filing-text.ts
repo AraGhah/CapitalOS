@@ -109,7 +109,7 @@ function htmlToText(html: string): string {
     .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
     .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
     .replace(/&amp;/gi, "&")
-    .replace(/[ \t ]+/g, " ")
+    .replace(/[ \t\u00a0]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -163,6 +163,15 @@ function sectionBounds(text: string, section: string): { start: number; end: num
   return null;
 }
 
+export async function getFilingText(
+  cik: string,
+  accession: string,
+  formType: string
+): Promise<{ url: string; text: string }> {
+  const url = await primaryDocument(cik, accession, formType);
+  return { url, text: htmlToText(await cachedText(`doc-${accession}.htm`, url)) };
+}
+
 export interface FilingSection {
   url: string;
   section: string;
@@ -183,8 +192,7 @@ export async function getFilingSection(
     throw new Error(`unknown section "${section}"; try one of: ${SECTION_NAMES.join(", ")}`);
   }
 
-  const url = await primaryDocument(cik, accession, formType);
-  const text = htmlToText(await cachedText(`doc-${accession}.htm`, url));
+  const { url, text } = await getFilingText(cik, accession, formType);
 
   const bounds = sectionBounds(text, section);
   if (!bounds) {

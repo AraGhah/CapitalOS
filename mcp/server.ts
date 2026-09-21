@@ -8,6 +8,8 @@ import { getPortfolio } from "../lib/holdings";
 import { getPortfolioSeries } from "../lib/timeseries";
 import { getScores } from "../lib/scoring";
 import { SECTION_NAMES, getFilingSection } from "../lib/filing-text";
+import { RESEARCH_FIELDS, addClaims, getResearchNote, type ResearchField } from "../lib/research";
+import { registerFilingSource } from "../lib/sources";
 import {
   companySource,
   findCompany,
@@ -300,15 +302,19 @@ server.registerTool(
         section,
         { offset, maxChars }
       );
+      // Recording the document as a source here is what lets a claim drawn from
+      // this text cite it afterwards.
+      const { sourceId } = await registerFilingSource(filing.accession);
       return reply(
         {
           ticker: company.ticker,
           accession: filing.accession,
           formType: filing.formType,
           filedAt: filing.filedAt,
+          sourceId,
           ...section_,
         },
-        [{ kind: "filing", ref: filing.accession, id: filing.id, url: section_.url }]
+        [{ kind: "filing", ref: filing.accession, id: sourceId, url: section_.url }]
       );
     } catch (err) {
       return failed((err as Error).message);
@@ -341,6 +347,63 @@ server.registerTool(
   async ({ seriesId, start, end, limit }) => {
     const rows = await getMacroSeries(seriesId, { start, end, limit });
     return reply(rows, [{ kind: "macro_series", ref: seriesId }]);
+  }
+);
+
+server.registerTool(
+  "research_note_get",
+  {
+    title: "Research note",
+    description:
+      "Stored research for a company: every claim with the source and verbatim snippet behind it, plus how many expected inputs were retrieved. A field with no claims has not been researched and should be reported that way.",
+    inputSchema: { ticker: z.string() },
+  },
+  async ({ ticker }) => {
+    const company = await resolve(ticker);
+    if (typeof company === "string") return failed(company);
+
+    const note = await getResearchNote(company.id, company.ticker, company.name);
+    const cited = new Map<string, ToolSource>();
+    for (const claims of Object.values(note.fields)) {
+      for (const claim of claims) {
+        cited.set(claim.sourceId, {
+          kind: "filing",
+          ref: claim.source.title ?? claim.source.url,
+          id: claim.sourceId,
+          url: claim.source.url,
+        });
+      }
+    }
+    return reply(note, [companySource(company), ...cited.values()]);
+  }
+);
+
+server.registerTool(
+  "research_claim_add",
+  {
+    title: "Add research claims",
+    description:
+      "Record claims about a company. Each claim needs a sourceId returned by another tool and a snippet copied word for word from that source. Claims whose snippet cannot be found in the source they cite are rejected and listed back with the reason.",
+    inputSchema: {
+      ticker: z.string(),
+      field: z.enum(RESEARCH_FIELDS),
+      claims: z
+        .array(
+          z.object({
+            text: z.string().describe("the claim being made"),
+            sourceId: z.string().describe("id of a source returned by another tool"),
+            snippet: z.string().describe("verbatim quote from that source supporting the claim"),
+          })
+        )
+        .min(1),
+    },
+  },
+  async ({ ticker, field, claims }) => {
+    const company = await resolve(ticker);
+    if (typeof company === "string") return failed(company);
+
+    const result = await addClaims(company.id, field as ResearchField, claims);
+    return reply(result, [companySource(company)]);
   }
 );
 

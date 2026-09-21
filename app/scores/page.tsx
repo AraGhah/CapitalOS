@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { getScores } from "@/lib/scoring";
 
 export const dynamic = "force-dynamic";
@@ -54,7 +55,9 @@ export default async function ScoresPage() {
         <tbody>
           {scores.map((s) => (
             <tr key={s.companyId}>
-              <td>{s.ticker}</td>
+              <td>
+                <Link href={`/research/${s.ticker}`}>{s.ticker}</Link>
+              </td>
               <td style={{ textAlign: "right" }}>{s.sector ?? "unclassified"}</td>
               <td>
                 {s.coverage.present} of {s.coverage.expected}

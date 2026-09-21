@@ -200,3 +200,37 @@ code {
   font-family: var(--font-geist-mono), monospace;
   font-size: 0.85em;
 }
+
+.missing {
+  font-size: 0.9rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.claim {
+  border-left: 2px solid var(--border);
+  padding-left: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.claim p {
+  font-size: 0.95rem;
+  margin-bottom: 0.4rem;
+}
+
+.claim blockquote {
+  font-size: 0.85rem;
+  color: var(--muted);
+  border-left: 2px solid var(--border);
+  padding-left: 0.6rem;
+  margin-bottom: 0.3rem;
+}
+
+.claim a {
+  font-size: 0.8rem;
+  text-decoration: underline;
+}
+
+table a {
+  text-decoration: underline;
+}
