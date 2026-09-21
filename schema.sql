@@ -59,7 +59,8 @@ CREATE TABLE sources (
   title TEXT,
   published_at TIMESTAMPTZ,
   retrieved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  raw_hash TEXT
+  raw_hash TEXT,
+  embedding JSONB
 );
 
 -- every claim written here needs a source and a verbatim snippet, not just a summary
@@ -112,3 +113,23 @@ CREATE TABLE watchlist (
 
 CREATE INDEX ON fundamentals (company_id, metric, period_end);
 CREATE INDEX ON prices_daily (company_id, date);
+
+-- One row per story, not per article: near-identical coverage of the same news
+-- collapses into a single event whose weight is its source count.
+CREATE TABLE events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID NOT NULL REFERENCES companies(id),
+  canonical_source_id UUID NOT NULL REFERENCES sources(id),
+  title TEXT NOT NULL,
+  first_seen TIMESTAMPTZ NOT NULL,
+  last_seen TIMESTAMPTZ NOT NULL,
+  source_count INTEGER NOT NULL
+);
+
+CREATE TABLE event_sources (
+  event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  source_id UUID NOT NULL REFERENCES sources(id),
+  PRIMARY KEY (event_id, source_id)
+);
+
+CREATE INDEX ON events (company_id, first_seen);

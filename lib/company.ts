@@ -3,7 +3,15 @@ import { pool } from "./db";
 // Every tool reports what it read from, so a claim can be traced back to a filing
 // or a table rather than to the model's memory.
 export interface ToolSource {
-  kind: "filing" | "prices_daily" | "transactions" | "scores" | "companies" | "watchlist" | "macro_series";
+  kind:
+    | "filing"
+    | "prices_daily"
+    | "transactions"
+    | "scores"
+    | "companies"
+    | "watchlist"
+    | "macro_series"
+    | "sources";
   ref: string;
   id?: string;
   url?: string;

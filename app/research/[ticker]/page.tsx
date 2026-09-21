@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { findCompany } from "@/lib/company";
 import { RESEARCH_FIELDS, getResearchNote } from "@/lib/research";
+import { getEvents } from "@/lib/news";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +18,10 @@ export default async function ResearchPage({ params }: PageProps<"/research/[tic
   const company = await findCompany(ticker);
   if (!company) notFound();
 
-  const note = await getResearchNote(company.id, company.ticker, company.name);
+  const [note, events] = await Promise.all([
+    getResearchNote(company.id, company.ticker, company.name),
+    getEvents(company.id, 15),
+  ]);
   const { coverage } = note;
   const missingInputs = coverage.inputs.filter((i) => !i.present);
 
@@ -55,6 +59,40 @@ export default async function ResearchPage({ params }: PageProps<"/research/[tic
           Not retrieved: {missingInputs.map((i) => i.name).join(", ")}.
         </p>
       )}
+
+      <section style={{ marginTop: "1.5rem" }}>
+        <h2>Events</h2>
+        <p className="subtle">
+          Candidate sources for catalysts and risks. One row per story, counted by how many
+          articles covered it.
+        </p>
+        {events.length === 0 ? (
+          <p className="missing">No events recorded — run the news ingest.</p>
+        ) : (
+          <table style={{ marginTop: "0.5rem" }}>
+            <thead>
+              <tr>
+                <th>Story</th>
+                <th>First seen</th>
+                <th>Sources</th>
+              </tr>
+            </thead>
+            <tbody>
+              {events.map((event) => (
+                <tr key={event.id}>
+                  <td style={{ textAlign: "left" }}>
+                    <a href={event.url} target="_blank" rel="noreferrer">
+                      {event.title}
+                    </a>
+                  </td>
+                  <td>{event.firstSeen.slice(0, 10)}</td>
+                  <td>{event.sourceCount}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
 
       {RESEARCH_FIELDS.map((field) => {
         const claims = note.fields[field];

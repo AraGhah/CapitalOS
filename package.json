@@ -10,6 +10,7 @@
     "fetch-prices": "tsx scripts/fetch-prices.ts",
     "ingest-edgar": "tsx scripts/ingest-edgar.ts",
     "compute-scores": "tsx scripts/compute-scores.ts",
+    "ingest-news": "tsx scripts/ingest-news.ts",
     "mcp": "tsx mcp/server.ts"
   },
   "dependencies": {

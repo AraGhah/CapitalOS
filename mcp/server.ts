@@ -10,6 +10,7 @@ import { getScores } from "../lib/scoring";
 import { SECTION_NAMES, getFilingSection } from "../lib/filing-text";
 import { RESEARCH_FIELDS, addClaims, getResearchNote, type ResearchField } from "../lib/research";
 import { registerFilingSource } from "../lib/sources";
+import { getEvents } from "../lib/news";
 import {
   companySource,
   findCompany,
@@ -404,6 +405,31 @@ server.registerTool(
 
     const result = await addClaims(company.id, field as ResearchField, claims);
     return reply(result, [companySource(company)]);
+  }
+);
+
+server.registerTool(
+  "company_events",
+  {
+    title: "Company events",
+    description:
+      "News events for a company, most recent first. Each event is one story with the number of articles that covered it, never one signal per article. The canonical source id can be cited when writing a claim, but only the headline was stored, so the snippet has to come from that headline.",
+    inputSchema: { ticker: z.string(), limit: z.number().int().min(1).max(100).optional() },
+  },
+  async ({ ticker, limit }) => {
+    const company = await resolve(ticker);
+    if (typeof company === "string") return failed(company);
+
+    const events = await getEvents(company.id, limit);
+    return reply(
+      events,
+      events.map((e) => ({
+        kind: "sources" as const,
+        ref: `${e.title} (${e.sourceCount} articles)`,
+        id: e.canonicalSourceId,
+        url: e.url,
+      }))
+    );
   }
 );
 

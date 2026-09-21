@@ -87,10 +87,18 @@ export async function getSource(sourceId: string): Promise<SourceRow | null> {
   };
 }
 
-// Returns the text a snippet must be found in. Only filings can be checked for
-// now, and a source whose text cannot be recovered is reported as such rather
-// than quietly passing every snippet put against it.
+// Returns the text a snippet must be found in. A source whose text cannot be
+// recovered is reported as such rather than quietly passing every snippet put
+// against it.
 export async function getSourceText(source: SourceRow): Promise<string> {
+  // News discovery stores the headline and nothing else, so the headline is the
+  // whole of what a claim citing one is allowed to quote. Anything deeper would
+  // need the article body fetched and stored first.
+  if (source.kind === "news") {
+    if (!source.title) throw new Error(`news source ${source.id} has no stored headline`);
+    return source.title;
+  }
+
   if (source.kind !== "filing") {
     throw new Error(`cannot verify snippets against a "${source.kind}" source yet`);
   }
