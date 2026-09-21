@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "../lib/env";
 import { pool } from "../lib/db";
 import { BENCHMARK_TICKER } from "../lib/constants";
 

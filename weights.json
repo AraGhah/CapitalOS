@@ -1,0 +1,12 @@
+{
+  "revenue_growth": 0.15,
+  "gross_margin": 0.1,
+  "gross_margin_trend": 0.05,
+  "operating_margin": 0.15,
+  "operating_margin_trend": 0.05,
+  "fcf_margin": 0.15,
+  "roic": 0.15,
+  "net_debt_to_ebitda": 0.08,
+  "ev_to_ebitda": 0.07,
+  "p_to_fcf": 0.05
+}
