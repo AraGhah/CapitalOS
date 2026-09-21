@@ -1,0 +1,114 @@
+-- CapitalOS database schema
+-- Run once: psql -U youruser -d capitalos -f schema.sql
+
+CREATE TABLE companies (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticker TEXT NOT NULL UNIQUE,
+  cik TEXT,
+  name TEXT NOT NULL,
+  sector TEXT,
+  industry TEXT,
+  active BOOLEAN NOT NULL DEFAULT true
+);
+
+CREATE TABLE prices_daily (
+  company_id UUID NOT NULL REFERENCES companies(id),
+  date DATE NOT NULL,
+  open NUMERIC(12,4),
+  high NUMERIC(12,4),
+  low NUMERIC(12,4),
+  close NUMERIC(12,4),
+  volume BIGINT,
+  adj_close NUMERIC(12,4),
+  PRIMARY KEY (company_id, date)
+);
+
+CREATE TABLE filings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID NOT NULL REFERENCES companies(id),
+  accession TEXT NOT NULL UNIQUE,
+  form_type TEXT NOT NULL,
+  filed_at DATE NOT NULL,
+  period_end DATE,
+  url TEXT
+);
+
+-- append only: a restatement is a new row, never an update on an existing one
+CREATE TABLE fundamentals (
+  id BIGSERIAL PRIMARY KEY,
+  company_id UUID NOT NULL REFERENCES companies(id),
+  period_end DATE NOT NULL,
+  fiscal_period TEXT NOT NULL,
+  metric TEXT NOT NULL,
+  value NUMERIC,
+  filing_id UUID REFERENCES filings(id),
+  retrieved_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE macro_series (
+  series_id TEXT NOT NULL,
+  date DATE NOT NULL,
+  value NUMERIC,
+  PRIMARY KEY (series_id, date)
+);
+
+CREATE TABLE sources (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  kind TEXT NOT NULL,
+  url TEXT NOT NULL,
+  title TEXT,
+  published_at TIMESTAMPTZ,
+  retrieved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  raw_hash TEXT
+);
+
+-- every claim written here needs a source and a verbatim snippet, not just a summary
+CREATE TABLE research_notes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID NOT NULL REFERENCES companies(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  field TEXT NOT NULL,
+  claim TEXT NOT NULL,
+  source_id UUID NOT NULL REFERENCES sources(id),
+  snippet TEXT NOT NULL
+);
+
+CREATE TABLE scores (
+  company_id UUID NOT NULL REFERENCES companies(id),
+  as_of DATE NOT NULL,
+  component TEXT NOT NULL,
+  raw_value NUMERIC,
+  percentile NUMERIC,
+  weight NUMERIC,
+  PRIMARY KEY (company_id, as_of, component)
+);
+
+CREATE TABLE transactions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id UUID NOT NULL,
+  company_id UUID NOT NULL REFERENCES companies(id),
+  side TEXT NOT NULL CHECK (side IN ('buy','sell')),
+  qty NUMERIC(14,4) NOT NULL,
+  price NUMERIC(12,4) NOT NULL,
+  fees NUMERIC(10,4) NOT NULL DEFAULT 0,
+  executed_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE theses (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID NOT NULL REFERENCES companies(id),
+  opened_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  rationale TEXT,
+  invalidation_rules JSONB NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','invalidated','closed'))
+);
+
+CREATE TABLE watchlist (
+  company_id UUID NOT NULL REFERENCES companies(id),
+  added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  note TEXT,
+  PRIMARY KEY (company_id)
+);
+
+CREATE INDEX ON fundamentals (company_id, metric, period_end);
+CREATE INDEX ON prices_daily (company_id, date);
