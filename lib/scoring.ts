@@ -55,6 +55,32 @@ async function latestMarketCap(companyId: string, shares: Decimal | undefined): 
   return new Decimal(rows[0].close).mul(shares);
 }
 
+export interface CompanyMetrics {
+  periodEnd: string | null;
+  raw: Map<string, Decimal>;
+  derived: Map<string, Decimal>;
+}
+
+// The reported figures for the latest annual period and everything derived from
+// them, computed on demand rather than read back from scores. A thesis checked
+// against these reacts to a corrected fundamental straight away, without waiting
+// for the next scoring run.
+export async function latestMetrics(companyId: string): Promise<CompanyMetrics> {
+  const periods = await annualPeriods(companyId);
+  if (periods.length === 0) {
+    return { periodEnd: null, raw: new Map(), derived: new Map() };
+  }
+
+  const [current, prior] = periods;
+  const marketCap = await latestMarketCap(companyId, current.values.get("shares_diluted"));
+
+  return {
+    periodEnd: current.periodEnd,
+    raw: current.values,
+    derived: deriveMetrics({ current, prior, marketCap }),
+  };
+}
+
 interface ScoreRow {
   companyId: string;
   component: string;
@@ -73,12 +99,7 @@ export async function computeScores(asOf: string): Promise<{ companies: number; 
   let covered = 0;
 
   for (const company of companies) {
-    const periods = await annualPeriods(company.id);
-    if (periods.length === 0) continue;
-
-    const [current, prior] = periods;
-    const marketCap = await latestMarketCap(company.id, current.values.get("shares_diluted"));
-    const derived = deriveMetrics({ current, prior, marketCap });
+    const { derived } = await latestMetrics(company.id);
     if (derived.size === 0) continue;
 
     covered++;

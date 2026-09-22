@@ -191,6 +191,31 @@ export async function getWatchlist() {
   }));
 }
 
+export async function addToWatchlist(companyId: string, note: string | null): Promise<void> {
+  await pool.query(
+    `INSERT INTO watchlist (company_id, note) VALUES ($1, $2)
+     ON CONFLICT (company_id) DO UPDATE SET note = EXCLUDED.note`,
+    [companyId, note]
+  );
+}
+
+export async function removeFromWatchlist(companyId: string): Promise<boolean> {
+  const { rowCount } = await pool.query(`DELETE FROM watchlist WHERE company_id = $1`, [companyId]);
+  return (rowCount ?? 0) > 0;
+}
+
+export async function listMacroSeriesIds(): Promise<Array<{ seriesId: string; observations: number; latest: string }>> {
+  const { rows } = await pool.query(
+    `SELECT series_id, count(*) AS observations, max(date) AS latest
+     FROM macro_series GROUP BY series_id ORDER BY series_id`
+  );
+  return rows.map((r) => ({
+    seriesId: r.series_id,
+    observations: Number(r.observations),
+    latest: (r.latest as Date).toISOString().slice(0, 10),
+  }));
+}
+
 export async function getMacroSeries(
   seriesId: string,
   opts: { start?: string; end?: string; limit?: number } = {}

@@ -3,14 +3,19 @@ import { getPortfolio } from "@/lib/holdings";
 import { getPortfolioSeries } from "@/lib/timeseries";
 import { ACCOUNT_ID } from "@/lib/constants";
 import { BenchmarkChart } from "./BenchmarkChart";
+import { listTheses } from "@/lib/theses";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const [{ holdings, totalReturn }, series] = await Promise.all([
+  const [{ holdings, totalReturn }, series, theses] = await Promise.all([
     getPortfolio(ACCOUNT_ID),
     getPortfolioSeries(ACCOUNT_ID),
+    listTheses(),
   ]);
+
+  const live = theses.filter((t) => t.thesis.status !== "closed");
+  const broken = live.filter((t) => t.thesis.status === "invalidated" || t.breached);
 
   const totalMarketValue = holdings.reduce((sum, h) => sum.add(h.marketValue), new Decimal(0));
 
@@ -31,7 +36,53 @@ export default async function DashboardPage() {
         </div>
       </div>
 
+      {broken.length > 0 && (
+        <div className="alert">
+          {broken.length === 1
+            ? "1 thesis no longer holds"
+            : `${broken.length} theses no longer hold`}
+        </div>
+      )}
+
       <BenchmarkChart data={series} />
+
+      <h2 style={{ marginTop: "2rem" }}>Theses</h2>
+      {live.length === 0 ? (
+        <p className="missing">No open theses.</p>
+      ) : (
+        live.map(({ thesis, checks, breached, periodEnd }) => (
+          <details key={thesis.id} open={breached}>
+            <summary>
+              <span className={breached ? "down" : undefined}>
+                {thesis.ticker} — {breached ? "invalidated" : "holding"}
+              </span>
+            </summary>
+            {thesis.rationale && <p className="subtle">{thesis.rationale}</p>}
+            <table>
+              <thead>
+                <tr>
+                  <th>Rule</th>
+                  <th>Latest{periodEnd ? ` (${periodEnd})` : ""}</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {checks.map((check, i) => (
+                  <tr key={i}>
+                    <td style={{ textAlign: "left" }}>
+                      {check.rule.metric} {check.rule.operator} {check.rule.value}
+                    </td>
+                    <td>{check.actual === null ? "—" : check.actual.toPrecision(4)}</td>
+                    <td className={check.breached ? "down" : undefined}>
+                      {check.actual === null ? "not checked" : check.breached ? "breached" : "holding"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        ))
+      )}
 
       <table style={{ marginTop: "2rem" }}>
         <thead>

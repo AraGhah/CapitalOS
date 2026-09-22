@@ -11,13 +11,18 @@
     "ingest-edgar": "tsx scripts/ingest-edgar.ts",
     "compute-scores": "tsx scripts/compute-scores.ts",
     "ingest-news": "tsx scripts/ingest-news.ts",
+    "ingest-fred": "tsx scripts/ingest-fred.ts",
+    "check-theses": "tsx scripts/check-theses.ts",
+    "watch-theses": "tsx scripts/watch-theses.ts",
     "mcp": "tsx mcp/server.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@types/node-cron": "^3.0.11",
     "decimal.js": "^10.6.0",
     "dotenv": "^18.0.1",
     "next": "16.3.5",
+    "node-cron": "^4.6.0",
     "pg": "^8.23.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",

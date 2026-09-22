@@ -11,6 +11,7 @@ import { SECTION_NAMES, getFilingSection } from "../lib/filing-text";
 import { RESEARCH_FIELDS, addClaims, getResearchNote, type ResearchField } from "../lib/research";
 import { registerFilingSource } from "../lib/sources";
 import { getEvents } from "../lib/news";
+import { RULE_METRICS, listTheses, openThesis, parseRules, setThesisStatus } from "../lib/theses";
 import {
   companySource,
   findCompany,
@@ -20,6 +21,9 @@ import {
   getPriceHistory,
   getTransactions,
   getWatchlist,
+  addToWatchlist,
+  removeFromWatchlist,
+  listMacroSeriesIds,
   type CompanyRow,
   type ToolSource,
 } from "../lib/company";
@@ -431,6 +435,115 @@ server.registerTool(
       }))
     );
   }
+);
+
+server.registerTool(
+  "thesis_open",
+  {
+    title: "Open a thesis",
+    description:
+      "Record why a position is held, together with the conditions that would mean the reason no longer holds. Turn the conditions into rules over stored metrics; a script checks them later without any model involved, so a rule naming a metric that is not stored is refused rather than kept as a tripwire that can never fire. " +
+      `Available metrics: ${RULE_METRICS.join(", ")}.`,
+    inputSchema: {
+      ticker: z.string(),
+      rationale: z.string().optional().describe("why the position is held, in your own words"),
+      rules: z
+        .array(
+          z.object({
+            metric: z.string(),
+            operator: z.enum(["<", ">", "<=", ">="]),
+            value: z.number(),
+          })
+        )
+        .min(1)
+        .describe("conditions that would invalidate the thesis"),
+    },
+  },
+  async ({ ticker, rationale, rules }) => {
+    const company = await resolve(ticker);
+    if (typeof company === "string") return failed(company);
+
+    try {
+      const parsed = parseRules(rules);
+      const id = await openThesis(company.id, rationale ?? null, parsed);
+      return reply({ id, ticker: company.ticker, rules: parsed }, [companySource(company)]);
+    } catch (err) {
+      return failed((err as Error).message);
+    }
+  }
+);
+
+server.registerTool(
+  "thesis_list",
+  {
+    title: "List theses",
+    description:
+      "Open and closed theses with every rule evaluated against the latest stored figures: the actual value, whether it breaches, and whether it could be checked at all. A rule with no stored value is reported as unchecked, not as passing.",
+    inputSchema: { status: z.enum(["open", "invalidated", "closed"]).optional() },
+  },
+  async ({ status }) => {
+    const evaluations = await listTheses(status);
+    return reply(evaluations, [
+      { kind: "scores", ref: "theses evaluated against latest annual fundamentals" },
+    ]);
+  }
+);
+
+server.registerTool(
+  "thesis_close",
+  {
+    title: "Close a thesis",
+    description: "Mark a thesis closed once the position is exited. Does not evaluate any rule.",
+    inputSchema: { id: z.string() },
+  },
+  async ({ id }) => {
+    await setThesisStatus(id, "closed");
+    return reply({ id, status: "closed" }, []);
+  }
+);
+
+server.registerTool(
+  "watchlist_add",
+  {
+    title: "Add to watchlist",
+    description:
+      "Put a tracked company on the watchlist with an optional note. The company must already be stored, since watching a ticker with no filings, prices or score behind it would watch nothing.",
+    inputSchema: { ticker: z.string(), note: z.string().optional() },
+  },
+  async ({ ticker, note }) => {
+    const company = await resolve(ticker);
+    if (typeof company === "string") return failed(company);
+
+    await addToWatchlist(company.id, note ?? null);
+    return reply({ ticker: company.ticker, note: note ?? null }, [companySource(company)]);
+  }
+);
+
+server.registerTool(
+  "watchlist_remove",
+  {
+    title: "Remove from watchlist",
+    description: "Take a company off the watchlist. Nothing else about it is deleted.",
+    inputSchema: { ticker: z.string() },
+  },
+  async ({ ticker }) => {
+    const company = await resolve(ticker);
+    if (typeof company === "string") return failed(company);
+
+    const removed = await removeFromWatchlist(company.id);
+    return reply({ ticker: company.ticker, removed }, [companySource(company)]);
+  }
+);
+
+server.registerTool(
+  "macro_series_list",
+  {
+    title: "Macro series available",
+    description:
+      "Which macro series are stored, how many observations each holds and how recent they are. Use this before macro_series so a series id is never guessed.",
+    inputSchema: {},
+  },
+  async () => reply(await listMacroSeriesIds(), [{ kind: "macro_series", ref: "catalogue" }])
 );
 
 async function main() {

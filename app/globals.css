@@ -234,3 +234,27 @@ code {
 table a {
   text-decoration: underline;
 }
+
+.alert {
+  border: 1px solid var(--down);
+  color: var(--down);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+
+.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.linklike:hover {
+  color: var(--down);
+}

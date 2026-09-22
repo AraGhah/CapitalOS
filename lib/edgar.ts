@@ -47,6 +47,10 @@ const METRIC_TAGS: Record<string, string[]> = {
 
 const SHARE_METRICS = new Set(["shares_diluted"]);
 
+// The figures ingested straight from a filing, as opposed to the ones derived
+// from them in lib/metrics.
+export const FUNDAMENTAL_METRICS = Object.keys(METRIC_TAGS);
+
 export type FiscalPeriod = "FY" | "Q";
 
 export interface XbrlFact {
