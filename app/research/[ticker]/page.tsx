@@ -1,7 +1,17 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
-import { findCompany } from "@/lib/company";
+import { getFilings, getPriceHistory } from "@/lib/company";
+import { resolveCompany } from "@/lib/resolve";
 import { RESEARCH_FIELDS, getResearchNote } from "@/lib/research";
-import { getEvents } from "@/lib/news";
+import { getScores } from "@/lib/scoring";
+import { getHeadlines, getLatestDossier } from "@/lib/dossier";
+import { FEED_LABELS } from "@/lib/feeds";
+import { timeAgo } from "@/lib/format";
+import { CoverageRing, PercentileGauge, Meter } from "@/app/components/Readouts";
+import { type PricePoint } from "@/app/components/PriceChart";
+import { LivePrice } from "@/app/components/LivePrice";
+import { DeskRunner } from "@/app/components/DeskRunner";
+import { Wire } from "@/app/components/Wire";
 
 export const dynamic = "force-dynamic";
 
@@ -13,114 +23,220 @@ const FIELD_LABELS: Record<string, string> = {
   bear_case: "Bear case",
 };
 
+const PRICE_BARS = 22; // roughly one month of trading days
+
+function label(component: string): string {
+  return component.replace(/_/g, " ");
+}
+
 export default async function ResearchPage({ params }: PageProps<"/research/[ticker]">) {
   const { ticker } = await params;
-  const company = await findCompany(ticker);
+
+  // A ticker the desk has not seen gets a companies row here, so searching one
+  // lands on a page that can research it. A symbol nothing recognises is a 404.
+  const company = await resolveCompany(ticker).catch(() => null);
   if (!company) notFound();
 
-  const [note, events] = await Promise.all([
+  const [note, headlines, dossier, bars, filings, scores] = await Promise.all([
     getResearchNote(company.id, company.ticker, company.name),
-    getEvents(company.id, 15),
+    getHeadlines(company.id, 80),
+    getLatestDossier(company.id),
+    getPriceHistory(company.id, { limit: PRICE_BARS }),
+    getFilings(company.id, { limit: 6 }),
+    getScores(),
   ]);
+
   const { coverage } = note;
   const missingInputs = coverage.inputs.filter((i) => !i.present);
+  const score = scores.find((s) => s.companyId === company.id) ?? null;
+
+  // Stored bars, used only if Yahoo cannot be reached when the card mounts.
+  const storedBars: PricePoint[] = bars.map((b) => {
+    const low = b.low === null ? null : Number(b.low);
+    const high = b.high === null ? null : Number(b.high);
+    return {
+      date: b.date.slice(5),
+      close: b.close === null ? null : Number(b.close),
+      low,
+      range: low !== null && high !== null ? high - low : null,
+    };
+  });
+
+  const wireItems = headlines.map((h) => ({
+    id: h.id,
+    title: h.title,
+    url: h.url,
+    ago: h.publishedAt ? timeAgo(h.publishedAt) : "undated",
+    sentiment: h.sentiment,
+    feed: FEED_LABELS[h.feed] ?? h.feed,
+  }));
+
+  const written = RESEARCH_FIELDS.filter((f) => note.fields[f].length > 0).length;
 
   return (
     <div>
-      <h1>
-        {note.ticker} — {note.name}
-      </h1>
-
-      <div className="stat-row">
-        <div className="stat">
-          <span className="label">Inputs retrieved</span>
-          <span className="value">
-            {coverage.present} of {coverage.expected}
-          </span>
-        </div>
-        <div className="stat">
-          <span className="label">Fields researched</span>
-          <span className="value">
-            {coverage.fieldsWritten} of {RESEARCH_FIELDS.length}
-          </span>
-        </div>
-        <div className="stat">
-          <span className="label">Score component spread</span>
-          <span className="value">
-            {coverage.scoreSpread === null
-              ? "—"
-              : `${(coverage.scoreSpread * 100).toFixed(0)} pts`}
-          </span>
+      <div className="page-head">
+        <div>
+          <p className="eyebrow">
+            {company.sector ?? "unclassified"}
+            {company.industry ? ` · ${company.industry}` : ""}
+          </p>
+          <h1>
+            <span className="num">{company.ticker}</span>{" "}
+            <span style={{ fontWeight: 400, color: "var(--muted)" }}>{company.name}</span>
+          </h1>
         </div>
       </div>
 
-      {missingInputs.length > 0 && (
-        <p className="subtle">
-          Not retrieved: {missingInputs.map((i) => i.name).join(", ")}.
-        </p>
-      )}
+      <div className="split">
+        <div className="stack">
+          <DeskRunner ticker={company.ticker} initialDossier={dossier} />
 
-      <section style={{ marginTop: "1.5rem" }}>
-        <h2>Events</h2>
-        <p className="subtle">
-          Candidate sources for catalysts and risks. One row per story, counted by how many
-          articles covered it.
-        </p>
-        {events.length === 0 ? (
-          <p className="missing">No events recorded — run the news ingest.</p>
-        ) : (
-          <table style={{ marginTop: "0.5rem" }}>
-            <thead>
-              <tr>
-                <th>Story</th>
-                <th>First seen</th>
-                <th>Sources</th>
-              </tr>
-            </thead>
-            <tbody>
-              {events.map((event) => (
-                <tr key={event.id}>
-                  <td style={{ textAlign: "left" }}>
-                    <a href={event.url} target="_blank" rel="noreferrer">
-                      {event.title}
-                    </a>
-                  </td>
-                  <td>{event.firstSeen.slice(0, 10)}</td>
-                  <td>{event.sourceCount}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
-
-      {RESEARCH_FIELDS.map((field) => {
-        const claims = note.fields[field];
-        return (
-          <section key={field} style={{ marginTop: "1.5rem" }}>
-            <h2>{FIELD_LABELS[field]}</h2>
-
-            {claims.length === 0 ? (
-              <p className="missing">Not researched — no claim recorded.</p>
+          <section className="panel">
+            <div className="panel-head">
+              <h2>The wire</h2>
+              <span className="hint">
+                {headlines.length} headlines, filterable by outlet
+              </span>
+            </div>
+            {headlines.length === 0 ? (
+              <p className="missing" style={{ padding: "0.9rem" }}>
+                No headlines stored — run the pipeline above to gather them.
+              </p>
             ) : (
-              claims.map((claim) => (
-                <div key={claim.id} className="claim">
-                  <p>{claim.text}</p>
-                  <blockquote>{claim.snippet}</blockquote>
-                  <a
-                    className="subtle"
-                    href={claim.source.url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {claim.source.title ?? claim.source.url}
-                  </a>
-                </div>
-              ))
+              <Wire items={wireItems} />
             )}
           </section>
-        );
-      })}
+
+          {RESEARCH_FIELDS.map((field) => {
+            const claims = note.fields[field];
+            if (claims.length === 0) return null;
+
+            return (
+              <section className="panel" key={field}>
+                <div className="panel-head">
+                  <h2>{FIELD_LABELS[field]}</h2>
+                  <span className="hint">
+                    {claims.length} {claims.length === 1 ? "claim" : "claims"}, each quoting its
+                    source
+                  </span>
+                </div>
+                <div className="panel-body">
+                  {claims.map((claim) => (
+                    <div key={claim.id} className="claim">
+                      <p>{claim.text}</p>
+                      <blockquote>{claim.snippet}</blockquote>
+                      <a className="cite" href={claim.source.url} target="_blank" rel="noreferrer">
+                        {claim.source.title ?? claim.source.url}
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+
+        <div className="stack">
+          <LivePrice ticker={company.ticker} fallback={storedBars} />
+
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Coverage</h2>
+              <span className="hint">what was retrieved</span>
+            </div>
+            <div className="panel-body">
+              <CoverageRing present={coverage.present} expected={coverage.expected} />
+              <p className="subtle" style={{ marginTop: "0.7rem" }}>
+                {written} of {RESEARCH_FIELDS.length} sourced research fields written
+                {coverage.scoreSpread !== null && (
+                  <>
+                    {" · "}
+                    score components disagree by {(coverage.scoreSpread * 100).toFixed(0)} pts
+                  </>
+                )}
+              </p>
+              {missingInputs.length > 0 && (
+                <p className="missing" style={{ marginTop: "0.4rem" }}>
+                  Not retrieved: {missingInputs.map((i) => i.name).join(", ")}.
+                </p>
+              )}
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Score</h2>
+              {score && <span className="hint">as of {score.asOf}</span>}
+            </div>
+            <div className="panel-body">
+              {score ? (
+                <>
+                  <div className="num" style={{ fontSize: "1.6rem" }}>
+                    {score.total.toFixed(1)}
+                  </div>
+                  <PercentileGauge percentile={score.total} />
+                  <table style={{ marginTop: "0.9rem" }}>
+                    <tbody>
+                      {score.components.map((c) => (
+                        <tr key={c.component}>
+                          <td className="wide" style={{ paddingLeft: 0 }}>
+                            {label(c.component)}
+                          </td>
+                          <td>
+                            <Meter share={c.percentile} />
+                          </td>
+                          <td className="num" style={{ paddingRight: 0 }}>
+                            {(c.percentile * 100).toFixed(0)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className="subtle" style={{ marginTop: "0.6rem" }}>
+                    <Link href="/scores">Full breakdown</Link>
+                  </p>
+                </>
+              ) : (
+                <p className="missing">
+                  Not scored — run <code>npm run ingest-edgar</code>, then{" "}
+                  <code>npm run compute-scores</code>.
+                </p>
+              )}
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Filings</h2>
+              <span className="hint">most recent</span>
+            </div>
+            {filings.length === 0 ? (
+              <p className="missing" style={{ padding: "0.9rem" }}>
+                None indexed yet.
+              </p>
+            ) : (
+              <ul className="rail">
+                {filings.map((f) => (
+                  <li key={f.id}>
+                    <span className="feed-name">
+                      {f.url ? (
+                        <a href={f.url} target="_blank" rel="noreferrer">
+                          {f.formType}
+                        </a>
+                      ) : (
+                        f.formType
+                      )}
+                      {f.periodEnd && <span className="subtle"> · {f.periodEnd}</span>}
+                    </span>
+                    <span className="count">{f.filedAt}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
+      </div>
     </div>
   );
 }

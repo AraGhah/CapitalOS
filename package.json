@@ -8,13 +8,15 @@
     "start": "next start",
     "lint": "eslint",
     "fetch-prices": "tsx scripts/fetch-prices.ts",
+    "fetch-prices-yahoo": "tsx scripts/fetch-prices-yahoo.ts",
     "ingest-edgar": "tsx scripts/ingest-edgar.ts",
     "compute-scores": "tsx scripts/compute-scores.ts",
     "ingest-news": "tsx scripts/ingest-news.ts",
     "ingest-fred": "tsx scripts/ingest-fred.ts",
     "check-theses": "tsx scripts/check-theses.ts",
     "watch-theses": "tsx scripts/watch-theses.ts",
-    "mcp": "tsx mcp/server.ts"
+    "mcp": "tsx mcp/server.ts",
+    "migrate-desk": "tsx scripts/migrate-desk.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

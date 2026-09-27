@@ -1,8 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import { addToWatchlist, findCompany, getWatchlist, removeFromWatchlist } from "@/lib/company";
+import { getTape } from "@/lib/desk";
+import { getVerdicts } from "@/lib/dossier";
+import { resolveCompany } from "@/lib/resolve";
 
+export const dynamic = "force-dynamic";
+
+// Each row carries what the watchlist is for: a sparkline, the day's move, and
+// the verdict the pipeline last reached on it.
 export async function GET() {
-  return NextResponse.json(await getWatchlist());
+  const [rows, tape, verdicts] = await Promise.all([getWatchlist(), getTape(), getVerdicts()]);
+  const priced = new Map(tape.map((t) => [t.ticker, t]));
+
+  return NextResponse.json(
+    rows.map((row) => {
+      const quote = priced.get(row.ticker);
+      const call = verdicts.get(row.ticker);
+      return {
+        ...row,
+        close: quote?.close ?? null,
+        changePct: quote?.changePct ?? null,
+        spark: quote?.spark ?? [],
+        verdict: call?.verdict ?? null,
+        verdictAt: call?.createdAt ?? null,
+      };
+    })
+  );
 }
 
 export async function POST(req: NextRequest) {
@@ -11,12 +34,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "ticker is required" }, { status: 400 });
   }
 
-  // Only companies already tracked can be watched; adding an unknown ticker here
-  // would create a row with no filings, prices or score behind it.
-  const company = await findCompany(ticker);
-  if (!company) {
+  // A ticker the desk has not ingested yet can still be watched: the resolver
+  // creates its row, but only once SEC or Yahoo confirms the symbol is real.
+  let company;
+  try {
+    company = await resolveCompany(ticker);
+  } catch (err) {
     return NextResponse.json(
-      { error: `no company stored for "${ticker}" — ingest it first` },
+      { error: err instanceof Error ? err.message : `unknown ticker "${ticker}"` },
       { status: 404 }
     );
   }

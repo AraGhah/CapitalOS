@@ -1,7 +1,13 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Link from "next/link";
+import { Suspense } from "react";
 import "./globals.css";
+import { Nav } from "./components/Nav";
+import { TickerSearch } from "./components/TickerSearch";
+import { ThemeToggle, themeBootScript } from "./components/ThemeToggle";
+import { TickerTape } from "./components/TickerTape";
+import { DeskStatus } from "./components/DeskStatus";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -14,20 +20,39 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "CapitalOS",
-  description: "Personal portfolio ledger and research desk",
+  title: "Capital OS",
+  description: "A personal investment desk: ledger, scores, filings and the news wire behind them.",
 };
+
+// The chrome reads the database on every request, so nothing here is prerendered.
+export const dynamic = "force-dynamic";
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
+      </head>
       <body>
-        <nav className="topnav">
-          <Link href="/">Dashboard</Link>
-          <Link href="/transactions">Transactions</Link>
-          <Link href="/scores">Scores</Link>
-          <Link href="/watchlist">Watchlist</Link>
-        </nav>
+        <header className="topbar">
+          <Link href="/" className="brand">
+            <span className="mark">C</span>
+            Capital OS
+          </Link>
+          <Suspense fallback={null}>
+            <DeskStatus />
+          </Suspense>
+          <Nav />
+          <div className="topbar-right">
+            <TickerSearch />
+            <ThemeToggle />
+          </div>
+        </header>
+
+        <Suspense fallback={null}>
+          <TickerTape />
+        </Suspense>
+
         <main className="page">{children}</main>
       </body>
     </html>

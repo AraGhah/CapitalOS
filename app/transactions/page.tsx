@@ -52,102 +52,142 @@ export default function TransactionsPage() {
 
     setForm((f) => ({ ...f, qty: "", price: "", fees: "0" }));
     setStatus("saved");
-    loadRows();
+    setRows(await loadRows());
   }
 
   return (
     <div>
-      <h1>Transactions</h1>
+      <div className="page-head">
+        <div>
+          <p className="eyebrow">Every position starts here</p>
+          <h1>Ledger</h1>
+        </div>
+      </div>
 
-      <form onSubmit={handleSubmit}>
-        <label>
-          Ticker
-          <input
-            value={form.ticker}
-            onChange={(e) => setForm({ ...form, ticker: e.target.value })}
-            required
-          />
-        </label>
+      <section className="panel" style={{ marginBottom: "1rem" }}>
+        <div className="panel-head">
+          <h2>New transaction</h2>
+          <span className="hint">cost basis is computed from these rows, never stored</span>
+        </div>
+        <div className="panel-body">
+          <form className="form" onSubmit={handleSubmit}>
+            <label>
+              Ticker
+              <input
+                value={form.ticker}
+                onChange={(e) => setForm({ ...form, ticker: e.target.value.toUpperCase() })}
+                spellCheck={false}
+                autoComplete="off"
+                required
+              />
+            </label>
 
-        <label>
-          Side
-          <select value={form.side} onChange={(e) => setForm({ ...form, side: e.target.value })}>
-            <option value="buy">Buy</option>
-            <option value="sell">Sell</option>
-          </select>
-        </label>
+            <label>
+              Side
+              <select
+                value={form.side}
+                onChange={(e) => setForm({ ...form, side: e.target.value })}
+              >
+                <option value="buy">Buy</option>
+                <option value="sell">Sell</option>
+              </select>
+            </label>
 
-        <label>
-          Quantity
-          <input
-            type="number"
-            step="any"
-            value={form.qty}
-            onChange={(e) => setForm({ ...form, qty: e.target.value })}
-            required
-          />
-        </label>
+            <label>
+              Quantity
+              <input
+                type="number"
+                step="any"
+                value={form.qty}
+                onChange={(e) => setForm({ ...form, qty: e.target.value })}
+                required
+              />
+            </label>
 
-        <label>
-          Price
-          <input
-            type="number"
-            step="any"
-            value={form.price}
-            onChange={(e) => setForm({ ...form, price: e.target.value })}
-            required
-          />
-        </label>
+            <label>
+              Price
+              <input
+                type="number"
+                step="any"
+                value={form.price}
+                onChange={(e) => setForm({ ...form, price: e.target.value })}
+                required
+              />
+            </label>
 
-        <label>
-          Fees
-          <input
-            type="number"
-            step="any"
-            value={form.fees}
-            onChange={(e) => setForm({ ...form, fees: e.target.value })}
-          />
-        </label>
+            <label>
+              Fees
+              <input
+                type="number"
+                step="any"
+                value={form.fees}
+                onChange={(e) => setForm({ ...form, fees: e.target.value })}
+              />
+            </label>
 
-        <label>
-          Date
-          <input
-            type="date"
-            value={form.executedAt}
-            onChange={(e) => setForm({ ...form, executedAt: e.target.value })}
-            required
-          />
-        </label>
+            <label>
+              Date
+              <input
+                type="date"
+                value={form.executedAt}
+                onChange={(e) => setForm({ ...form, executedAt: e.target.value })}
+                required
+              />
+            </label>
 
-        <button type="submit">Add transaction</button>
-        {status && <span>{status}</span>}
-      </form>
+            <button className="primary" type="submit">
+              Add transaction
+            </button>
+          </form>
+          {status && (
+            <p className="subtle" style={{ marginTop: "0.6rem" }}>
+              {status}
+            </p>
+          )}
+        </div>
+      </section>
 
-      <h1 style={{ marginTop: "2rem" }}>Recent</h1>
-      <table>
-        <thead>
-          <tr>
-            <th>Ticker</th>
-            <th>Side</th>
-            <th>Qty</th>
-            <th>Price</th>
-            <th>Fees</th>
-            <th>Date</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.id}>
-              <td style={{ textAlign: "left" }}>{r.ticker}</td>
-              <td>{r.side}</td>
-              <td>{r.qty}</td>
-              <td>{r.price}</td>
-              <td>{r.fees}</td>
-              <td>{new Date(r.executed_at).toLocaleDateString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <section className="panel">
+        <div className="panel-head">
+          <h2>Recent</h2>
+          <span className="hint">newest first</span>
+        </div>
+        <div className="panel-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th>Side</th>
+                <th>Qty</th>
+                <th>Price</th>
+                <th>Fees</th>
+                <th>Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id}>
+                  <td>
+                    <span className="sym">{r.ticker}</span>
+                  </td>
+                  <td>
+                    <span className={`pill ${r.side === "buy" ? "good" : "bad"}`}>{r.side}</span>
+                  </td>
+                  <td className="num">{r.qty}</td>
+                  <td className="num">{r.price}</td>
+                  <td className="num">{r.fees}</td>
+                  <td className="num">{r.executed_at.slice(0, 10)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {rows.length === 0 && (
+          <p className="missing" style={{ padding: "0.9rem" }}>
+            No transactions recorded yet.
+          </p>
+        )}
+      </section>
     </div>
   );
 }
