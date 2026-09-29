@@ -42,7 +42,6 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           <Suspense fallback={null}>
             <DeskStatus />
           </Suspense>
-          <Nav />
           <div className="topbar-right">
             <TickerSearch />
             <ThemeToggle />
@@ -53,7 +52,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           <TickerTape />
         </Suspense>
 
-        <main className="page">{children}</main>
+        <div className="shell">
+          <Nav />
+          <main className="page">{children}</main>
+        </div>
       </body>
     </html>
   );

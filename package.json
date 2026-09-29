@@ -16,7 +16,15 @@
     "check-theses": "tsx scripts/check-theses.ts",
     "watch-theses": "tsx scripts/watch-theses.ts",
     "mcp": "tsx mcp/server.ts",
-    "migrate-desk": "tsx scripts/migrate-desk.ts"
+    "migrate-desk": "tsx scripts/migrate-desk.ts",
+    "migrate-consensus": "tsx scripts/migrate-consensus.ts",
+    "check-memory": "tsx scripts/check-memory.ts",
+    "selftest-consensus": "tsx scripts/selftest-consensus.ts",
+    "selftest-risk": "tsx scripts/selftest-risk.ts",
+    "selftest-strategy": "tsx scripts/selftest-strategy.ts",
+    "migrate-lab": "tsx scripts/migrate-lab.ts",
+    "migrate": "tsx scripts/migrate.ts",
+    "autopilot": "tsx scripts/autopilot.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

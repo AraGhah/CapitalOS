@@ -24,11 +24,12 @@ export class NoModelError extends Error {
 
 // Roughly fifteen requests a minute, enforced here rather than hoped for. Calls
 // queue instead of racing, so a pipeline fanning out over many headlines cannot
-// trip the account limit.
+// trip the account limit. Exported so the consensus engine's Anthropic calls
+// queue on the same clock as the desk's, rather than each keeping its own.
 const MIN_GAP_MS = 4_000;
 let nextSlot = 0;
 
-async function takeSlot(): Promise<void> {
+export async function takeSlot(): Promise<void> {
   const now = Date.now();
   const at = Math.max(now, nextSlot);
   nextSlot = at + MIN_GAP_MS;

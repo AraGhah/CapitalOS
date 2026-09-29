@@ -19,8 +19,10 @@ interface Observation {
   value: number;
 }
 
-// fredgraph.csv is open, so no key and no account. A missing reading is a lone
-// full stop, which is a gap in the series rather than a zero.
+// fredgraph.csv is open, so no key and no account. A missing reading — a market
+// holiday, a report that was never published — is a gap in the series rather
+// than a zero. Older files mark it with a lone full stop; current ones leave the
+// cell empty, and Number("") is 0, so both are checked before converting.
 function parseCsv(csv: string): Observation[] {
   const [, ...lines] = csv.trim().split(/\r?\n/);
 
@@ -28,8 +30,10 @@ function parseCsv(csv: string): Observation[] {
     const [date, raw] = line.split(",");
     if (!date || raw === undefined) return [];
 
-    const value = Number(raw);
-    if (raw.trim() === "." || !Number.isFinite(value)) return [];
+    const cell = raw.trim();
+    if (cell === "" || cell === ".") return [];
+    const value = Number(cell);
+    if (!Number.isFinite(value)) return [];
     return [{ date, value }];
   });
 }

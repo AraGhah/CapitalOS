@@ -1,5 +1,6 @@
 import Decimal from "decimal.js";
 import Link from "next/link";
+import { Suspense } from "react";
 import { getPortfolio } from "@/lib/holdings";
 import { getPortfolioSeries } from "@/lib/timeseries";
 import { ACCOUNT_ID, BENCHMARK_TICKER } from "@/lib/constants";
@@ -19,6 +20,11 @@ import { Sparkline } from "./components/Sparkline";
 import { Pipeline } from "./components/Readouts";
 import { FeedRail } from "./components/FeedRail";
 import { Wire } from "./components/Wire";
+import { listRuns } from "@/lib/ai/store";
+import { listMemory } from "@/lib/ai/memory";
+import { modeSpec } from "@/lib/ai/modes";
+import { RiskBrief } from "./components/RiskBrief";
+import { listAlerts } from "@/lib/autopilot/cycle";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +40,9 @@ export default async function DeskPage() {
     discovery,
     deskSentiment,
     verdicts,
+    committees,
+    memory,
+    openAlerts,
   ] = await Promise.all([
     getPortfolio(ACCOUNT_ID),
     getPortfolioSeries(ACCOUNT_ID),
@@ -45,7 +54,11 @@ export default async function DeskPage() {
     getDiscoveryFeeds(),
     getDeskSentiment(),
     getVerdicts(),
+    listRuns({ limit: 5 }),
+    listMemory({ limit: 50 }),
+    listAlerts({ status: "new", limit: 5 }),
   ]);
+  const brokenMemory = memory.filter((m) => m.status === "refuted");
 
   const live = theses.filter((t) => t.thesis.status !== "closed");
   const broken = live.filter((t) => t.thesis.status === "invalidated" || t.breached);
@@ -68,7 +81,7 @@ export default async function DeskPage() {
     <div>
       <div className="page-head">
         <div>
-          <p className="eyebrow">Desk</p>
+          <p className="eyebrow">Command Center</p>
           <h1>Portfolio</h1>
         </div>
         <Pipeline stages={stages} />
@@ -116,6 +129,17 @@ export default async function DeskPage() {
           {broken.length === 1
             ? "One thesis no longer holds — a rule it was opened on has been crossed."
             : `${broken.length} theses no longer hold — a rule each was opened on has been crossed.`}
+        </div>
+      )}
+
+      {brokenMemory.length > 0 && (
+        <div className="alert" style={{ marginBottom: "1rem" }}>
+          <span className="dot" style={{ background: "currentColor" }} />
+          <Link href="/journal">
+            {brokenMemory.length === 1
+              ? "A committee assumption was contradicted by a newer filing."
+              : `${brokenMemory.length} committee assumptions were contradicted by newer filings.`}
+          </Link>
         </div>
       )}
 
@@ -263,6 +287,64 @@ export default async function DeskPage() {
         </div>
 
         <div className="stack">
+          {openAlerts.length > 0 && (
+            <section className="panel">
+              <div className="panel-head">
+                <h2>Important alerts</h2>
+                <Link href="/alerts" className="hint">
+                  review →
+                </Link>
+              </div>
+              <ul className="why panel-body">
+                {openAlerts.map((a) => (
+                  <li key={a.id}>
+                    <span className={`pill ${a.severity === "high" ? "bad" : a.severity === "warn" ? "warn" : "info"}`}>
+                      {a.severity}
+                    </span>
+                    <span>{a.title}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          <Suspense fallback={null}>
+            <RiskBrief />
+          </Suspense>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h2>AI research activity</h2>
+              <Link href="/committee" className="hint">
+                convene →
+              </Link>
+            </div>
+            {committees.length === 0 ? (
+              <p className="missing" style={{ padding: "0.9rem" }}>
+                No committee has sat yet.
+              </p>
+            ) : (
+              <ul className="rail">
+                {committees.map((r) => (
+                  <li key={r.id}>
+                    <span
+                      className={r.status === "running" ? "dot" : "dot idle"}
+                      style={r.status === "failed" ? { background: "var(--down)" } : r.status === "done" ? { background: "var(--up)" } : undefined}
+                    />
+                    <span className="feed-name" title={r.headline ?? r.error ?? undefined}>
+                      <Link href={`/committee/${r.id}`}>
+                        <span className="num">{r.ticker}</span> · {modeSpec(r.mode).label}
+                      </Link>
+                    </span>
+                    <span className="count">
+                      {r.confidence === null ? timeAgo(r.createdAt) : Math.round(r.confidence * 100)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
           {deskSentiment.tagged > 0 && (
             <section className="panel">
               <div className="panel-head">

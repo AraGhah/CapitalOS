@@ -120,8 +120,8 @@ export function AskTheDesk({ initialQuestion }: { initialQuestion?: string }) {
 
         {loaded && turns.length === 0 && !thinking && (
           <p className="subtle">
-            Ask about any company or ticker. The desk can pull fresh headlines, get a quote, or run
-            the full pipeline on a ticker — and it will tell you which it did.
+            Ask about any company or ticker. The desk can pull fresh headlines, get a quote, run the
+            news pipeline, or convene the multi-model investment committee — and it will tell you which it did.
           </p>
         )}
 

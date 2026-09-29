@@ -9,7 +9,8 @@ import {
 import { hasModel, NoModelError } from "@/lib/llm";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+// A committee convened from the chat can run several minutes.
+export const maxDuration = 800;
 
 export async function GET() {
   return Response.json({ messages: await loadTranscript(), model: hasModel() });

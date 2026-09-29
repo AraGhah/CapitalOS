@@ -2,6 +2,7 @@ import { pool } from "./db";
 import { FUNDAMENTAL_METRICS } from "./edgar";
 import { DERIVED_METRICS } from "./metrics";
 import { latestMetrics } from "./scoring";
+import { addJournal } from "./ai/journal";
 
 export type Operator = "<" | ">" | "<=" | ">=";
 
@@ -185,6 +186,16 @@ export async function checkOpenTheses(): Promise<CheckSummary> {
 
     if (evaluation.breached) {
       await setThesisStatus(evaluation.thesis.id, "invalidated");
+      const crossed = evaluation.checks.filter((c) => c.breached);
+      await addJournal({
+        companyId: evaluation.thesis.companyId,
+        kind: "thesis-invalidated",
+        title: `Thesis on ${evaluation.thesis.ticker} no longer holds`,
+        detail: crossed
+          .map((c) => `${c.rule.metric} is ${Number((c.actual as number).toPrecision(4))} (rule: ${c.rule.operator} ${c.rule.value})`)
+          .join("; "),
+        refId: evaluation.thesis.id,
+      });
     }
   }
 

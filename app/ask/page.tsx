@@ -12,7 +12,7 @@ export default async function AskPage({ searchParams }: PageProps<"/ask">) {
       <div className="page-head">
         <div>
           <p className="eyebrow">Every answer names the tool behind it</p>
-          <h1>Ask the desk</h1>
+          <h1>Capital Copilot</h1>
         </div>
       </div>
 

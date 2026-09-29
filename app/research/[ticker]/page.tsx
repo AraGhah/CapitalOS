@@ -12,6 +12,8 @@ import { type PricePoint } from "@/app/components/PriceChart";
 import { LivePrice } from "@/app/components/LivePrice";
 import { DeskRunner } from "@/app/components/DeskRunner";
 import { Wire } from "@/app/components/Wire";
+import { listRuns } from "@/lib/ai/store";
+import { modeSpec } from "@/lib/ai/modes";
 
 export const dynamic = "force-dynamic";
 
@@ -37,14 +39,16 @@ export default async function ResearchPage({ params }: PageProps<"/research/[tic
   const company = await resolveCompany(ticker).catch(() => null);
   if (!company) notFound();
 
-  const [note, headlines, dossier, bars, filings, scores] = await Promise.all([
+  const [note, headlines, dossier, bars, filings, scores, committees] = await Promise.all([
     getResearchNote(company.id, company.ticker, company.name),
     getHeadlines(company.id, 80),
     getLatestDossier(company.id),
     getPriceHistory(company.id, { limit: PRICE_BARS }),
     getFilings(company.id, { limit: 6 }),
     getScores(),
+    listRuns({ companyId: company.id, limit: 3 }),
   ]);
+  const lastCommittee = committees.find((r) => r.status === "done") ?? null;
 
   const { coverage } = note;
   const missingInputs = coverage.inputs.filter((i) => !i.present);
@@ -139,6 +143,35 @@ export default async function ResearchPage({ params }: PageProps<"/research/[tic
 
         <div className="stack">
           <LivePrice ticker={company.ticker} fallback={storedBars} />
+
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Investment committee</h2>
+              {lastCommittee && <span className="hint">{timeAgo(lastCommittee.createdAt)}</span>}
+            </div>
+            <div className="panel-body stack-sm">
+              {lastCommittee ? (
+                <>
+                  <p>
+                    <Link href={`/committee/${lastCommittee.id}`}>{lastCommittee.headline ?? "Open the report"}</Link>
+                  </p>
+                  <p className="subtle">
+                    {modeSpec(lastCommittee.mode).label}
+                    {lastCommittee.confidence !== null &&
+                      ` · confidence ${Math.round(lastCommittee.confidence * 100)}`}
+                  </p>
+                </>
+              ) : (
+                <p className="missing">
+                  No committee yet. Several models analyse the same evidence blind, debate, and are fact-checked
+                  before a conclusion is written.
+                </p>
+              )}
+              <Link href={`/committee?ticker=${company.ticker}`} className="chip" style={{ alignSelf: "flex-start" }}>
+                Convene a committee
+              </Link>
+            </div>
+          </section>
 
           <section className="panel">
             <div className="panel-head">

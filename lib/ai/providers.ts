@@ -1,0 +1,178 @@
+import { takeSlot } from "../llm";
+import { costOf, type ModelSpec } from "./models";
+
+/* ---------------------------------------------------------------------------
+   One call shape for every provider.
+
+   Two adapters cover the whole registry: Anthropic's Messages API, and the
+   OpenAI-compatible chat endpoint that OpenAI, Gemini, xAI, DeepSeek and
+   OpenRouter all serve. Every call comes back metered — tokens in, tokens out,
+   tokens served from cache, latency, and a price when the model has one — so
+   the run ledger is written from what the provider reported, not estimated.
+
+   The evidence pack goes first and is marked cacheable. Every seat on the
+   committee reads the same pack, so after the first call it is billed at the
+   cache rate instead of in full each time.
+--------------------------------------------------------------------------- */
+
+export interface ModelRequest {
+  // Identical across every call of a run, so it is the cached prefix.
+  evidence: string;
+  // The role's instructions, which differ per seat.
+  instructions: string;
+  user: string;
+  maxTokens: number;
+}
+
+export interface ModelResult {
+  text: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  latencyMs: number;
+  costUsd: number | null;
+}
+
+const TIMEOUT_MS = 180_000;
+
+// Providers other than Anthropic get a gentler spacing of their own; each has its
+// own account limit, so one provider's queue never slows another's.
+const OTHER_GAP_MS = 1_000;
+const nextSlotByProvider = new Map<string, number>();
+
+async function providerSlot(provider: string): Promise<void> {
+  if (provider === "anthropic") return takeSlot();
+  const now = Date.now();
+  const at = Math.max(now, nextSlotByProvider.get(provider) ?? 0);
+  nextSlotByProvider.set(provider, at + OTHER_GAP_MS);
+  if (at > now) await new Promise((r) => setTimeout(r, at - now));
+}
+
+export async function callModel(spec: ModelSpec, req: ModelRequest): Promise<ModelResult> {
+  const apiKey = process.env[spec.providerConfig.keyEnv]?.trim();
+  if (!apiKey) throw new Error(`${spec.providerConfig.keyEnv} is not set`);
+
+  await providerSlot(spec.provider);
+  const started = Date.now();
+
+  const usage =
+    spec.providerConfig.kind === "anthropic"
+      ? await callAnthropic(spec, apiKey, req)
+      : await callOpenAiCompatible(spec, apiKey, req);
+
+  return {
+    ...usage,
+    latencyMs: Date.now() - started,
+    // Cached input is still input; pricing it at the full rate overstates the
+    // cost slightly, which is the safer direction for a budget to err in.
+    costUsd: costOf(spec, usage.inputTokens + usage.cachedTokens, usage.outputTokens),
+  };
+}
+
+/* ----------------------------------------------------------------- Anthropic */
+
+interface AnthropicBody {
+  content?: Array<{ type: string; text?: string }>;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
+  error?: { message?: string };
+}
+
+async function callAnthropic(
+  spec: ModelSpec,
+  apiKey: string,
+  req: ModelRequest
+): Promise<Omit<ModelResult, "latencyMs" | "costUsd">> {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: spec.model,
+      max_tokens: req.maxTokens,
+      system: [
+        { type: "text", text: req.evidence, cache_control: { type: "ephemeral" } },
+        { type: "text", text: req.instructions },
+      ],
+      messages: [{ role: "user", content: req.user }],
+    }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+
+  const body = (await res.json()) as AnthropicBody;
+  if (!res.ok) {
+    throw new Error(`${spec.label} request failed: ${res.status} ${body.error?.message ?? ""}`.trim());
+  }
+
+  return {
+    text: (body.content ?? [])
+      .filter((b) => b.type === "text" && typeof b.text === "string")
+      .map((b) => b.text)
+      .join("\n")
+      .trim(),
+    inputTokens: (body.usage?.input_tokens ?? 0) + (body.usage?.cache_creation_input_tokens ?? 0),
+    outputTokens: body.usage?.output_tokens ?? 0,
+    cachedTokens: body.usage?.cache_read_input_tokens ?? 0,
+  };
+}
+
+/* ---------------------------------------------------------- OpenAI-compatible */
+
+interface ChatBody {
+  choices?: Array<{ message?: { content?: string | null } }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+  };
+  error?: { message?: string } | string;
+}
+
+async function callOpenAiCompatible(
+  spec: ModelSpec,
+  apiKey: string,
+  req: ModelRequest
+): Promise<Omit<ModelResult, "latencyMs" | "costUsd">> {
+  const config = spec.providerConfig;
+  const base = (config.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
+
+  const payload: Record<string, unknown> = {
+    model: spec.model,
+    messages: [
+      // One system message with the evidence first: providers that cache
+      // automatically do it on the longest shared prefix.
+      { role: "system", content: `${req.evidence}\n\n${req.instructions}` },
+      { role: "user", content: req.user },
+    ],
+    [config.maxTokensParam ?? "max_tokens"]: req.maxTokens,
+  };
+  if (config.jsonMode) payload.response_format = { type: "json_object" };
+
+  const res = await fetch(`${base}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+
+  const body = (await res.json()) as ChatBody;
+  if (!res.ok) {
+    const message = typeof body.error === "string" ? body.error : body.error?.message;
+    throw new Error(`${spec.label} request failed: ${res.status} ${message ?? ""}`.trim());
+  }
+
+  const cached = body.usage?.prompt_tokens_details?.cached_tokens ?? 0;
+  return {
+    text: body.choices?.[0]?.message?.content?.trim() ?? "",
+    inputTokens: Math.max(0, (body.usage?.prompt_tokens ?? 0) - cached),
+    outputTokens: body.usage?.completion_tokens ?? 0,
+    cachedTokens: cached,
+  };
+}

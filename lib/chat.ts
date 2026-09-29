@@ -6,6 +6,16 @@ import { analyst, dossierHash, scout, strategist } from "./agents";
 import { addToWatchlist } from "./company";
 import { getCachedDossier, saveDossier, type Dossier } from "./dossier";
 import { fetchChart } from "./quote";
+import { runConsensus } from "./ai/committee";
+import { getRun } from "./ai/store";
+import { isMode } from "./ai/modes";
+import { analyzeRisk, basisFrom } from "./risk/engine";
+import { applyScenario, FACTORS, type FactorId } from "./risk/scenarios";
+import { marketOverview } from "./market/overview";
+import { METRIC_KEYS, METRICS, parseScreen, scan, type MetricKey } from "./scanner";
+import { BACKTEST_METRICS, runBacktest, type Rebalance } from "./strategy/backtest";
+import { paperPortfolio } from "./paper";
+import { listAlerts } from "./autopilot/cycle";
 
 /* ---------------------------------------------------------------------------
    Ask the desk.
@@ -22,12 +32,15 @@ market history, prices, or earnings. Every factual claim in your answer must com
 tool result in this conversation.
 
 Rules:
-- Call a tool before answering anything about a company, a ticker, or the news.
-- Name the source of each claim: the outlet for a headline, "the desk pipeline" for a verdict.
+- Call a tool before answering anything about a company, a ticker, the news, or the portfolio.
+- Name the source of each claim: the outlet for a headline, "the desk pipeline" for a verdict,
+  "the investment committee" for a consensus — and give the committee report's link when you used one.
 - If the tools return nothing useful, say so. Never fill the gap from memory.
 - Never state a price, a target, or a figure that is not in a tool result.
 - No disclaimers, no "as an AI", no hedging filler. Be short and concrete.
-- A verdict from research_ticker is a summary of public news, not advice. Do not oversell it.`;
+- A verdict from research_ticker is a summary of public news, not advice. Do not oversell it.
+- A committee's confidence and agreement figures are computed by code; report them as given, and say where
+  the models disagreed rather than only where they agreed.`;
 
 const TOOLS: Tool[] = [
   {
@@ -56,6 +69,115 @@ const TOOLS: Tool[] = [
       },
       required: ["ticker"],
     },
+  },
+  {
+    name: "convene_committee",
+    description:
+      "Convene the multi-model investment committee on a ticker: several AI models analyse the same verified " +
+      "evidence pack blind, every figure they cite is fact-checked, and a consensus is written with confidence, " +
+      "per-dimension agreement and the disagreements. Use when the person asks for a committee, a deep or " +
+      "multi-model analysis, a thesis, or whether the models agree. Modes: fast (one model), standard (up to " +
+      "three), deep (adds a challenger and a judge), committee (adds six specialists and a bull/bear debate). " +
+      "Each mode is slower and costs more than the last; use standard unless the person asks for more.",
+    input_schema: {
+      type: "object",
+      properties: {
+        ticker: { type: "string", description: "The ticker symbol, e.g. NVDA" },
+        mode: { type: "string", enum: ["fast", "standard", "deep", "committee"] },
+        question: { type: "string", description: "A specific question for the committee, if the person asked one" },
+      },
+      required: ["ticker"],
+    },
+  },
+  {
+    name: "portfolio_risk",
+    description:
+      "Measure the portfolio's risk from a year of daily prices: volatility, beta, drawdown, value at risk, " +
+      "each position's share of the risk, today's move by position, correlation, sector weights, factor " +
+      "exposures and hidden exposures (positions that move with a theme like semiconductors). Use for " +
+      "questions about the portfolio's risk, concentration, exposure, or why it moved today. Without a " +
+      "basket it measures the open positions; pass a basket like 'NVDA:30,AMD:20' to test an idea.",
+    input_schema: {
+      type: "object",
+      properties: {
+        basket: { type: "string", description: "Optional what-if basket, e.g. 'NVDA:30,AMD:20,MSFT:50'" },
+        use_watchlist: { type: "boolean", description: "Measure the watchlist at equal weight instead" },
+      },
+    },
+  },
+  {
+    name: "run_scenario",
+    description:
+      "Estimate how the portfolio would move if one market factor moved by a given percentage, using each " +
+      "position's measured one-year sensitivity to that factor. Factors: market (S&P 500), nasdaq, smallcaps, " +
+      "semis, oil, rates (long Treasuries — they rise when rates fall; a 1-point rate fall is about +16%), " +
+      "dollar, gold.",
+    input_schema: {
+      type: "object",
+      properties: {
+        factor: { type: "string", enum: FACTORS.map((f) => f.id) },
+        shock_pct: { type: "number", description: "The move in the factor in percent, e.g. -30" },
+        basket: { type: "string", description: "Optional what-if basket instead of the open positions" },
+      },
+      required: ["factor", "shock_pct"],
+    },
+  },
+  {
+    name: "market_regime",
+    description:
+      "Read the current market: returns for indices, sectors, rates, commodities, the dollar and crypto, the " +
+      "regime signals (trend, volatility, growth appetite, breadth, credit, liquidity, yield curve, inflation) " +
+      "with the numbers behind each, and the macro series. Use for questions about what is moving markets or " +
+      "what kind of market it is.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "run_screen",
+    description:
+      "Screen every company the desk has filings for. Turn the person's strategy into rules separated by " +
+      "semicolons, each 'metric op value' with op one of >= <= > <, ratios as decimals (20% is 0.2). Metrics: " +
+      METRIC_KEYS.map((k) => `${k} (${METRICS[k].label})`).join(", ") +
+      ". above_sma200 is 1 or 0; below_high is negative (−0.15 is 15% below the high). Omit rules to get " +
+      "today's research queue from the standing screens.",
+    input_schema: {
+      type: "object",
+      properties: { rules: { type: "string", description: "e.g. 'revenue_growth>=0.2; fcf_margin>0; below_high<=-0.15'" } },
+    },
+  },
+  {
+    name: "run_backtest",
+    description:
+      "Backtest a strategy over up to ten years: hold the companies passing the rules (same rule format as " +
+      "run_screen, but without the score metric), ranked by one metric, rebalanced on a calendar, paying " +
+      "commission and slippage. Fundamentals count only from their filing date, so there is no look-ahead. " +
+      "Returns total and annual return, drawdown, Sharpe, win rate and trades against SPY, by year and by market " +
+      "regime. Always mention the survivorship-bias warning it returns.",
+    input_schema: {
+      type: "object",
+      properties: {
+        rules: { type: "string", description: "e.g. 'revenue_growth>=0.2; fcf_margin>0; below_high<=-0.15'" },
+        rank_by: { type: "string", enum: BACKTEST_METRICS },
+        rank_descending: { type: "boolean" },
+        max_positions: { type: "number" },
+        rebalance: { type: "string", enum: ["monthly", "quarterly", "annual"] },
+        years: { type: "number" },
+      },
+      required: ["rules", "rank_by"],
+    },
+  },
+  {
+    name: "paper_portfolio",
+    description: "The paper-trading portfolio: value, return against the same dollars in SPY, positions, and each committee conclusion being tested on paper.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_alerts",
+    description:
+      "The open alerts the autopilot raised: unusual price moves and volume, news surges, new filings, broken " +
+      "theses, contradicted committee assumptions, portfolio risk thresholds and market regime changes — each " +
+      "with the number that triggered it and, for held positions, the effect on the portfolio. Use for 'what " +
+      "changed', 'what should I look at' or 'what risks are developing'.",
+    input_schema: { type: "object", properties: {} },
   },
   {
     name: "get_quote",
@@ -176,6 +298,193 @@ async function runGetQuote(ticker: string): Promise<{ result: unknown; summary: 
   };
 }
 
+async function runConveneCommittee(
+  ticker: string,
+  mode: unknown,
+  question: unknown
+): Promise<{ result: unknown; summary: string }> {
+  const { runId, cached } = await runConsensus({
+    ticker,
+    mode: isMode(mode) ? mode : "standard",
+    focus: typeof question === "string" ? question : null,
+  });
+  const run = await getRun(runId);
+  const report = run?.report;
+  if (!report) throw new Error("the committee finished without a report");
+
+  return {
+    result: {
+      report_link: `/committee/${runId}`,
+      served_from_cache: cached,
+      mode: report.mode,
+      headline: report.synthesis?.headline ?? null,
+      thesis: report.synthesis?.thesis ?? null,
+      answer_to_question: report.synthesis?.answer ?? null,
+      confidence: { label: report.confidence.label, why: report.confidence.reasons.map((r) => r.text) },
+      dimensions: report.dimensions.map((d) => ({
+        dimension: d.label,
+        rating: d.label2,
+        agreement: d.agreement === null ? null : `${Math.round(d.agreement * 100)}%`,
+        contested: d.contested,
+      })),
+      primary_disagreement: report.synthesis?.primaryDisagreement ?? null,
+      critical_uncertainty: report.criticalUncertainty,
+      risks: report.synthesis?.risks.slice(0, 5).map((r) => `${r.text} (${r.severity})`) ?? [],
+      fact_check: `${report.checks.verified} verified, ${report.checks.unsupported + report.checks.contradicted} failed of ${report.checks.total} claims`,
+      seats: report.analysts.map((a) => a.modelLabel),
+    },
+    summary: `${ticker.toUpperCase()} committee (${report.mode}): confidence ${report.confidence.label}${cached ? ", from cache" : ""}`,
+  };
+}
+
+async function runPortfolioRisk(basket: unknown, watchlist: unknown): Promise<{ result: unknown; summary: string }> {
+  const report = await analyzeRisk(
+    basisFrom({ basket: typeof basket === "string" ? basket : null, source: watchlist === true ? "watchlist" : null })
+  );
+  if (report.positions.length === 0) {
+    return {
+      result: { measured: report.label, positions: [], note: "nothing to measure", warnings: report.warnings },
+      summary: `${report.label}: nothing to measure`,
+    };
+  }
+  const r = (x: number | null, d = 4) => (x === null ? null : Number(x.toFixed(d)));
+  return {
+    result: {
+      measured: report.label,
+      window: report.window,
+      portfolio: Object.fromEntries(Object.entries(report.portfolio).map(([k, v]) => [k, typeof v === "number" ? r(v) : v])),
+      positions: report.positions.map((p) => ({
+        ticker: p.ticker,
+        sector: p.sector,
+        weight: r(p.weight),
+        share_of_risk: r(p.riskShare),
+        volatility: r(p.vol),
+        beta: r(p.beta),
+        today: r(p.dayChange),
+        effect_on_portfolio_today: r(p.dayContribution),
+      })),
+      sectors: report.sectors.map((s) => ({ sector: s.sector, weight: r(s.weight) })),
+      factor_betas: report.factors.map((f) => ({ factor: f.id, beta: r(f.portfolioBeta), explained: r(f.explained) })),
+      moves_together: report.clusters,
+      findings: report.findings.map((f) => f.text),
+      warnings: report.warnings,
+      page: "/risk",
+      note: "Ratios are decimals (0.25 = 25%). Computed from daily closes by code.",
+    },
+    summary: `${report.label}: vol ${r(report.portfolio.vol, 3)}, beta ${r(report.portfolio.beta, 2)}, ${report.findings.length} findings`,
+  };
+}
+
+async function runScenarioTool(factor: unknown, shockPct: unknown, basket: unknown): Promise<{ result: unknown; summary: string }> {
+  const id = FACTORS.find((f) => f.id === factor)?.id as FactorId | undefined;
+  const shock = Number(shockPct) / 100;
+  if (!id || !Number.isFinite(shock)) throw new Error("run_scenario needs a known factor and a numeric shock_pct");
+
+  const report = await analyzeRisk(basisFrom({ basket: typeof basket === "string" ? basket : null }));
+  const result = applyScenario(report.exposures, id, shock);
+  return {
+    result: {
+      measured: report.label,
+      factor: id,
+      shock,
+      estimated_portfolio_move: Number(result.impact.toFixed(4)),
+      estimated_dollars: result.dollars === null ? null : Math.round(result.dollars),
+      share_of_daily_variance_the_factor_explains: Number(result.explained.toFixed(3)),
+      positions: result.positions,
+      not_measured: result.unmeasured,
+      method: "linear, one factor, one year of daily betas — direction and rough size, not a forecast",
+    },
+    summary: `${id} ${shock >= 0 ? "+" : ""}${(shock * 100).toFixed(0)}% → portfolio ${(result.impact * 100).toFixed(1)}%`,
+  };
+}
+
+async function runMarketRegime(): Promise<{ result: unknown; summary: string }> {
+  const o = await marketOverview();
+  const r = (x: number | null) => (x === null ? null : Number(x.toFixed(4)));
+  return {
+    result: {
+      as_of: o.asOf,
+      regime: o.regime,
+      signals: o.signals.map((s) => ({ signal: s.name, reading: s.reading, stance: s.stance, basis: s.basis })),
+      assets: o.assets
+        .filter((a) => a.m)
+        .map((a) => ({ asset: `${a.label} (${a.symbol})`, last: r(a.m!.last), day: r(a.m!.day), month: r(a.m!.month), three_months: r(a.m!.quarter), ytd: r(a.m!.ytd) })),
+      macro: o.macro.map((m) => ({ series: m.label, latest: r(m.latest), unit: m.unit, as_of: m.asOf, year_ago: r(m.yearAgo) })),
+      page: "/markets",
+      note: "Returns are decimals (0.05 = 5%). Computed from daily closes by code.",
+    },
+    summary: `market ${o.regime.label}: ${o.regime.on} on, ${o.regime.off} off`,
+  };
+}
+
+async function runScreenTool(rules: unknown): Promise<{ result: unknown; summary: string }> {
+  const parsed = typeof rules === "string" && rules.trim() ? parseScreen(rules) : { rules: [], errors: [] };
+  if (parsed.errors.length > 0 && parsed.rules.length === 0) throw new Error(parsed.errors.join("; "));
+  const result = await scan(parsed.rules);
+  const link = parsed.rules.length ? `/scanner?rules=${encodeURIComponent(parsed.rules.map((x) => `${x.metric}${x.op}${x.value}`).join(";"))}` : "/scanner";
+  return {
+    result: {
+      screen: result.custom?.description ?? "standing screens",
+      rule_errors: parsed.errors,
+      universe: result.universe,
+      matches: result.queue.map((row) => ({ ticker: row.ticker, name: row.name, screens: row.matches.map((m) => `${m.name}: ${m.reasons.join(", ")}`) })),
+      page: link,
+    },
+    summary: `${result.queue.length} of ${result.universe} companies pass${result.custom ? ` "${result.custom.description}"` : " a standing screen"}`,
+  };
+}
+
+async function runBacktestTool(input: Record<string, unknown>): Promise<{ result: unknown; summary: string }> {
+  const parsed = parseScreen(String(input.rules ?? ""));
+  const rules = parsed.rules.filter((r) => r.metric !== "score");
+  const rankBy = (BACKTEST_METRICS as string[]).includes(String(input.rank_by)) ? (input.rank_by as MetricKey) : "return_3m";
+  const rebalance: Rebalance = ["monthly", "quarterly", "annual"].includes(String(input.rebalance)) ? (input.rebalance as Rebalance) : "quarterly";
+  const r = await runBacktest({
+    name: "Copilot strategy",
+    rules,
+    rankBy,
+    rankDescending: input.rank_descending !== false,
+    maxPositions: Math.min(10, Math.max(1, Math.round(Number(input.max_positions) || 5))),
+    rebalance,
+    costBps: 5,
+    slippageBps: 10,
+    years: Math.min(10, Math.max(1, Math.round(Number(input.years) || 10))),
+    universe: null,
+  });
+  const round = (x: number | null) => (x === null ? null : Number(x.toFixed(4)));
+  return {
+    result: {
+      period: `${r.start} to ${r.end}`,
+      rules: rules.map((x) => `${x.metric} ${x.op} ${x.value}`),
+      rule_errors: parsed.errors,
+      stats: Object.fromEntries(Object.entries(r.stats).map(([k, v]) => [k, typeof v === "number" ? round(v) : v])),
+      by_year: r.years.map((y) => ({ year: y.year, strategy: round(y.strategy), spy: round(y.benchmark) })),
+      by_regime: r.regimes.map((g) => ({ regime: g.regime, days: g.days, strategy: round(g.strategy), spy: round(g.benchmark) })),
+      latest_holdings: r.rebalances.at(-1)?.holdings ?? [],
+      warnings: r.warnings,
+      page: "/strategies",
+      note: "Returns are decimals (0.25 = 25%).",
+    },
+    summary: `backtest ${r.start}..${r.end}: ${(r.stats.totalReturn * 100).toFixed(0)}% vs SPY ${(r.stats.benchmarkReturn * 100).toFixed(0)}%`,
+  };
+}
+
+async function runPaperPortfolio(): Promise<{ result: unknown; summary: string }> {
+  const p = await paperPortfolio();
+  return {
+    result: {
+      value: Math.round(p.value),
+      cash: Math.round(p.cash),
+      total_return: Number(p.totalReturn.toFixed(4)),
+      same_dollars_in_spy: p.benchmarkReturn === null ? null : Number(p.benchmarkReturn.toFixed(4)),
+      positions: p.positions.map((x) => ({ ticker: x.ticker, weight: Number(x.weight.toFixed(4)), unrealized: Math.round(x.unrealized) })),
+      committee_hypotheses: p.hypotheses.map((h) => ({ ticker: h.ticker, conclusion: h.rationale, since: h.enteredAt.slice(0, 10), return: h.return, spy: h.spyReturn, report: `/committee/${h.runId}` })),
+      page: "/paper",
+    },
+    summary: `paper portfolio ${(p.totalReturn * 100).toFixed(2)}%`,
+  };
+}
+
 async function runTool(
   name: string,
   input: Record<string, unknown>
@@ -184,6 +493,22 @@ async function runTool(
     if (name === "get_news") return await runGetNews(String(input.query ?? ""));
     if (name === "research_ticker") return await runResearchTicker(String(input.ticker ?? ""));
     if (name === "get_quote") return await runGetQuote(String(input.ticker ?? ""));
+    if (name === "market_regime") return await runMarketRegime();
+    if (name === "get_alerts") {
+      const alerts = await listAlerts({ status: "new", limit: 25 });
+      return {
+        result: { alerts: alerts.map((a) => ({ severity: a.severity, ticker: a.ticker, title: a.title, detail: a.detail, portfolio_effect: a.impact?.portfolio_effect ?? null, committee_report: a.runId ? `/committee/${a.runId}` : null, when: a.createdAt })), page: "/alerts" },
+        summary: `${alerts.length} open alerts`,
+      };
+    }
+    if (name === "run_backtest") return await runBacktestTool(input);
+    if (name === "paper_portfolio") return await runPaperPortfolio();
+    if (name === "run_screen") return await runScreenTool(input.rules);
+    if (name === "portfolio_risk") return await runPortfolioRisk(input.basket, input.use_watchlist);
+    if (name === "run_scenario") return await runScenarioTool(input.factor, input.shock_pct, input.basket);
+    if (name === "convene_committee") {
+      return await runConveneCommittee(String(input.ticker ?? ""), input.mode, input.question);
+    }
     return { result: { error: `no tool named ${name}` }, summary: `unknown tool ${name}` };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
