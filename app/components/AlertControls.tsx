@@ -1,5 +1,7 @@
 "use client";
 
+import { request } from "@/app/components/request";
+
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -9,7 +11,7 @@ export function AlertStatus({ id, status }: { id: string; status: string }) {
 
   async function set(next: "seen" | "dismissed" | "new") {
     setBusy(true);
-    await fetch("/api/alerts", {
+    await request("/api/alerts", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, status: next }),
@@ -58,7 +60,7 @@ export function RunCycle({ hasModel }: { hasModel: boolean }) {
   async function run() {
     setBusy(true);
     setError(null);
-    const res = await fetch("/api/autopilot", {
+    const res = await request("/api/autopilot", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ convene }),

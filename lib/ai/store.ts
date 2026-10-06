@@ -1,4 +1,5 @@
 import { pool } from "../db";
+import { isUuid } from "../ids";
 import type { EvidencePack } from "./evidence";
 import type { ModelSpec } from "./models";
 import type { ModelResult } from "./providers";
@@ -230,7 +231,7 @@ export interface StoredRun {
 }
 
 export async function getRun(id: string): Promise<StoredRun | null> {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
+  if (!isUuid(id)) return null;
 
   const { rows } = await pool.query(`${SELECT_SUMMARY} WHERE r.id = $1`, [id]);
   if (rows.length === 0) return null;
@@ -264,6 +265,7 @@ export async function getRun(id: string): Promise<StoredRun | null> {
 }
 
 export async function getCompanyForRun(runId: string): Promise<{ companyId: string; ticker: string } | null> {
+  if (!isUuid(runId)) return null;
   const { rows } = await pool.query(
     `SELECT r.company_id, c.ticker FROM consensus_runs r JOIN companies c ON c.id = r.company_id WHERE r.id = $1`,
     [runId]

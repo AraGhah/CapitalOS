@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
+import { PENDING_KEY } from "./AskTheDesk";
 
 // A ticker goes straight to its research page. Anything that is not shaped like a
 // ticker — a company name, a question — goes to the desk, which has tools for
@@ -22,6 +23,12 @@ export function TickerSearch() {
     if (TICKER.test(query)) {
       router.push(`/research/${encodeURIComponent(query.toUpperCase())}`);
     } else {
+      // The copilot only asks a question on arrival if this desk put it here.
+      try {
+        sessionStorage.setItem(PENDING_KEY, query);
+      } catch {
+        // storage blocked: the question still arrives, pre-filled, for one click
+      }
       router.push(`/ask?q=${encodeURIComponent(query)}`);
     }
   }

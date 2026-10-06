@@ -1,5 +1,7 @@
 "use client";
 
+import { request } from "@/app/components/request";
+
 import { useState } from "react";
 
 interface Brief {
@@ -21,7 +23,7 @@ export function MarketBrief({ hasModel }: { hasModel: boolean }) {
   async function write(force: boolean) {
     setBusy(true);
     setError(null);
-    const res = await fetch(`/api/markets/brief${force ? "?force=1" : ""}`, { method: "POST" });
+    const res = await request(`/api/markets/brief${force ? "?force=1" : ""}`, { method: "POST" });
     const body = await res.json().catch(() => ({}));
     setBusy(false);
     if (!res.ok) {

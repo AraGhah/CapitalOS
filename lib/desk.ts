@@ -84,7 +84,7 @@ export async function getFeedStatus(): Promise<FeedStatus[]> {
      SELECT 'Market data', 'daily bars',
             count(*)::int, max(date)::text FROM prices_daily
      UNION ALL
-     SELECT 'GDELT news', 'headlines kept',
+     SELECT 'News sources', 'headlines kept',
             count(*)::int, max(published_at)::text FROM sources WHERE kind = 'news'
      UNION ALL
      SELECT 'Event clusters', 'stories deduplicated',

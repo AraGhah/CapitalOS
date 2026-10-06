@@ -29,7 +29,7 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const { ticker, note } = await req.json();
+  const { ticker, note } = ((await req.json().catch(() => null)) ?? {}) as { ticker?: unknown; note?: unknown };
   if (typeof ticker !== "string" || !ticker.trim()) {
     return NextResponse.json({ error: "ticker is required" }, { status: 400 });
   }
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  await addToWatchlist(company.id, typeof note === "string" && note.trim() ? note.trim() : null);
+  await addToWatchlist(company.id, typeof note === "string" && note.trim() ? note.trim().slice(0, 500) : null);
   return NextResponse.json({ ticker: company.ticker }, { status: 201 });
 }
 

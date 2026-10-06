@@ -2,6 +2,7 @@ import "../lib/env";
 import { pool } from "../lib/db";
 import { BENCHMARK_TICKER } from "../lib/constants";
 import { fetchChart } from "../lib/quote";
+import { fetchSplits, storeSplits } from "../lib/splits";
 
 // The same job as fetch-prices.ts, against Yahoo's chart endpoint instead of Alpha
 // Vantage, so daily bars can be filled without an API key. Range defaults to two
@@ -56,7 +57,19 @@ async function store(companyId: string, ticker: string): Promise<number> {
   const chart = await fetchChart(ticker, RANGE);
   let written = 0;
 
-  for (const bar of chart.bars) {
+  // A session still trading has a price, not a close; it is stored on the next
+  // run once the session has ended.
+  const bars = chart.lastBarComplete ? chart.bars : chart.bars.slice(0, -1);
+
+  // Splits go in alongside the bars, so ledger quantities can be restated in
+  // the same shares as these split-adjusted closes.
+  try {
+    await storeSplits(companyId, await fetchSplits(ticker));
+  } catch (err) {
+    console.warn(`${ticker}: splits not recorded (${err instanceof Error ? err.message : err})`);
+  }
+
+  for (const bar of bars) {
     const { rowCount } = await pool.query(
       `INSERT INTO prices_daily (company_id, date, open, high, low, close, volume, adj_close)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$6)

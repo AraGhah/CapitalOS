@@ -1,5 +1,7 @@
 "use client";
 
+import { request } from "@/app/components/request";
+
 import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
 import { Sparkline } from "@/app/components/Sparkline";
@@ -31,8 +33,11 @@ export default function WatchlistPage() {
   const [form, setForm] = useState({ ticker: "", note: "" });
 
   async function loadRows(): Promise<WatchRow[]> {
-    const res = await fetch("/api/watchlist");
-    return res.json();
+    const res = await request("/api/watchlist");
+    // an error body is an object, not rows; the table shows empty rather than crashing
+    if (!res.ok) return [];
+    const body = await res.json().catch(() => []);
+    return Array.isArray(body) ? body : [];
   }
 
   useEffect(() => {
@@ -43,14 +48,14 @@ export default function WatchlistPage() {
     e.preventDefault();
     setStatus(null);
 
-    const res = await fetch("/api/watchlist", {
+    const res = await request("/api/watchlist", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(form),
     });
 
     if (!res.ok) {
-      const body = await res.json();
+      const body = await res.json().catch(() => ({}));
       setStatus(body.error ?? "something went wrong");
       return;
     }
@@ -61,7 +66,7 @@ export default function WatchlistPage() {
   }
 
   async function remove(ticker: string) {
-    await fetch(`/api/watchlist?ticker=${encodeURIComponent(ticker)}`, { method: "DELETE" });
+    await request(`/api/watchlist?ticker=${encodeURIComponent(ticker)}`, { method: "DELETE" });
     setStatus(`${ticker} removed`);
     setRows(await loadRows());
   }

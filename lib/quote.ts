@@ -18,6 +18,9 @@ export interface Chart {
   previousClose: number | null;
   changePct: number | null;
   bars: Bar[];
+  // false while the latest bar's session is still trading: its "close" is the
+  // price so far, not a close, and must not be stored as one
+  lastBarComplete: boolean;
 }
 
 interface YahooChart {
@@ -30,6 +33,7 @@ interface YahooChart {
         regularMarketPrice?: number;
         chartPreviousClose?: number;
         previousClose?: number;
+        currentTradingPeriod?: { regular?: { start?: number; end?: number } };
       };
       timestamp?: number[];
       indicators: {
@@ -81,8 +85,24 @@ export async function fetchChart(ticker: string, range = "1mo"): Promise<Chart> 
     .filter((bar) => bar.close !== null);
 
   const price = result.meta.regularMarketPrice ?? bars.at(-1)?.close ?? null;
+  // chartPreviousClose is the close before the first bar of the requested
+  // range, a month back for range=1mo, not yesterday's close. The previous
+  // session's close is the bar before the latest one.
   const previousClose =
-    result.meta.chartPreviousClose ?? result.meta.previousClose ?? bars.at(-2)?.close ?? null;
+    result.meta.previousClose ??
+    (bars.length >= 2 ? bars[bars.length - 2].close : null) ??
+    result.meta.chartPreviousClose ??
+    null;
+
+  const session = result.meta.currentTradingPeriod?.regular;
+  const lastBar = bars.at(-1);
+  const sessionDate = session?.start ? new Date(session.start * 1000).toISOString().slice(0, 10) : null;
+  const lastBarComplete = !(
+    lastBar &&
+    session?.end &&
+    sessionDate === lastBar.date &&
+    Date.now() < session.end * 1000
+  );
 
   return {
     ticker: result.meta.symbol ?? ticker.toUpperCase(),
@@ -91,6 +111,7 @@ export async function fetchChart(ticker: string, range = "1mo"): Promise<Chart> 
     previousClose,
     changePct:
       price !== null && previousClose ? ((price - previousClose) / previousClose) * 100 : null,
+    lastBarComplete,
     bars,
   };
 }

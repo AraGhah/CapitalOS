@@ -38,10 +38,15 @@ export function buildPosition(txns: Txn[]): Position {
       qty = newQty;
       costEverInvested = costEverInvested.add(cost);
     } else {
-      const proceeds = txQty.mul(txPrice).sub(txFees);
-      const costRemoved = avgCost.mul(txQty);
-      realizedPL = realizedPL.add(proceeds.sub(costRemoved));
-      qty = qty.sub(txQty);
+      // The API refuses a sell larger than the position, but rows written before
+      // it did may exist. Only shares actually held can be sold: the excess is
+      // ignored rather than turned into a short the ledger never recorded.
+      const sold = Decimal.min(txQty, qty);
+      if (sold.lte(0)) continue;
+      const proceeds = sold.mul(txPrice).sub(txFees);
+      realizedPL = realizedPL.add(proceeds.sub(avgCost.mul(sold)));
+      qty = qty.sub(sold);
+      if (qty.isZero()) avgCost = ZERO;
     }
   }
 
@@ -53,6 +58,9 @@ export interface Holding {
   qty: Decimal;
   avgCost: Decimal;
   price: Decimal;
+  // false when no stored close exists and the position is marked at its cost,
+  // so a flat P/L can be told apart from a missing price
+  priced: boolean;
   costBasis: Decimal;
   marketValue: Decimal;
   unrealizedPL: Decimal;
@@ -80,6 +88,7 @@ export function summarizeHoldings(
       qty: p.qty,
       avgCost: p.avgCost,
       price,
+      priced: prices.has(companyId),
       costBasis,
       marketValue,
       unrealizedPL: marketValue.sub(costBasis),

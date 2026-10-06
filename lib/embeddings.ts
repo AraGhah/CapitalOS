@@ -70,6 +70,7 @@ async function openAiVectors(texts: string[], apiKey: string): Promise<number[][
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ model: "text-embedding-3-small", input: texts }),
+    signal: AbortSignal.timeout(60_000),
   });
   if (!res.ok) {
     throw new Error(`embeddings request failed: ${res.status} ${await res.text()}`);

@@ -9,6 +9,7 @@ import { listTheses } from "../theses";
 import { getPortfolio } from "../holdings";
 import { fetchChart } from "../quote";
 import { inputHash } from "../llm";
+import { capitalisationShares } from "../edgar";
 
 /* ---------------------------------------------------------------------------
    The Capital Data Engine, as far as the committee is concerned: one evidence
@@ -146,6 +147,7 @@ const FUNDAMENTALS = [
   "total_debt",
   "total_equity",
   "shares_diluted",
+  "shares_outstanding",
 ];
 
 const FUNDAMENTAL_LABELS: Record<string, string> = {
@@ -161,6 +163,7 @@ const FUNDAMENTAL_LABELS: Record<string, string> = {
   total_debt: "Total debt",
   total_equity: "Shareholders' equity",
   shares_diluted: "Diluted weighted shares",
+  shares_outstanding: "Shares outstanding at period end",
 };
 
 // Only the derived metrics that do not depend on a price. Price-based multiples
@@ -233,7 +236,7 @@ export async function buildEvidence(company: CompanyRow): Promise<EvidencePack> 
       kind: "fundamental",
       label: `${FUNDAMENTAL_LABELS[fact.metric] ?? fact.metric}, fiscal year ending ${fact.periodEnd}`,
       value,
-      unit: fact.metric === "shares_diluted" ? "shares" : "usd",
+      unit: fact.metric === "shares_diluted" || fact.metric === "shares_outstanding" ? "shares" : "usd",
       asOf: fact.periodEnd,
       source: {
         kind: "filing",
@@ -316,7 +319,9 @@ export async function buildEvidence(company: CompanyRow): Promise<EvidencePack> 
         asOf: score.asOf,
         source: { kind: "scores", ref: "scores table, weights.json" },
       });
-      for (const c of score.components) {
+      // A component counted at the midpoint for want of data is not a fact
+      // about the company, so it never becomes evidence.
+      for (const c of score.components.filter((x) => !x.imputed)) {
         b.add({
           kind: "score",
           label: `Sector percentile for ${c.component.replace(/_/g, " ")} (1.0 = best in sector)`,
@@ -446,6 +451,10 @@ interface Close {
   close: number;
 }
 
+// Long enough to cover a holiday weekend, short enough that a forgotten price
+// job does not leave the committee reading last month's close as "last close".
+const STALE_AFTER_DAYS = 5;
+
 async function priceSeries(
   company: CompanyRow
 ): Promise<{ closes: Close[]; source: string; ref: string }> {
@@ -454,8 +463,11 @@ async function priceSeries(
     .filter((b) => b.close !== null)
     .map((b) => ({ date: b.date, close: Number(b.close) }));
 
-  // A few stored bars are not a year of history; below this Yahoo is asked instead.
-  if (closes.length >= 60) {
+  // A few stored bars are not a year of history, and a year that ended weeks ago
+  // is not today's price; in either case Yahoo is asked instead.
+  const lastStored = closes.at(-1)?.date;
+  const fresh = lastStored !== undefined && Date.now() - Date.parse(lastStored) < STALE_AFTER_DAYS * 86_400_000;
+  if (closes.length >= 60 && fresh) {
     return { closes, source: "prices_daily", ref: "prices_daily table" };
   }
 
@@ -464,7 +476,8 @@ async function priceSeries(
     const live = chart.bars
       .filter((b) => b.close !== null)
       .map((b) => ({ date: b.date, close: b.close as number }));
-    if (live.length > closes.length) {
+    const newer = (live.at(-1)?.date ?? "") > (lastStored ?? "");
+    if (live.length > closes.length || (newer && live.length >= 60)) {
       return { closes: live, source: "yahoo", ref: "Yahoo Finance daily chart, 1 year" };
     }
   } catch {
@@ -532,13 +545,15 @@ export function valuation(
   latest: Map<string, number>
 ): Array<{ label: string; value: number; unit: Unit }> {
   const out: Array<{ label: string; value: number; unit: Unit }> = [];
-  const shares = latest.get("shares_diluted");
+  const shares = capitalisationShares(latest);
   if (!shares || shares <= 0 || !(price > 0)) return out;
 
   const d = (n: number) => new Decimal(n);
   const marketCap = d(price).mul(shares);
   out.push({
-    label: "Market capitalisation, last close times diluted weighted shares",
+    label: `Market capitalisation, last close times ${
+      latest.has("shares_outstanding") ? "shares outstanding at period end" : "diluted weighted shares"
+    }`,
     value: marketCap.toNumber(),
     unit: "usd",
   });

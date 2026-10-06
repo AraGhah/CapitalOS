@@ -1,5 +1,7 @@
 "use client";
 
+import { request } from "@/app/components/request";
+
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
@@ -29,7 +31,7 @@ export function PaperOrder({
     setBusy(true);
     setError(null);
     setNote(null);
-    const res = await fetch("/api/paper", {
+    const res = await request("/api/paper", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ticker, side, dollars: Number(dollars), runId, rationale }),

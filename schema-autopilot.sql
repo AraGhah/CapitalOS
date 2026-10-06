@@ -1,6 +1,6 @@
 -- CapitalOS — the autopilot
 --
--- Apply with `npm run migrate` (every layer) or `npm run migrate-autopilot`.
+-- Apply with `npm run migrate` (every layer) or `npm run migrate schema-autopilot.sql`.
 -- IF NOT EXISTS throughout.
 --
 -- An alert is written by code that crossed a threshold, never by a model. The

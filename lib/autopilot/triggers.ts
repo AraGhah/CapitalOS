@@ -57,6 +57,7 @@ const pct = (x: number) => `${x >= 0 ? "+" : "−"}${Math.abs(x * 100).toFixed(1
 const MIN_MOVE = 0.05;
 const SIGMAS = 3;
 const VOLUME_MULTIPLE = 2.5;
+const STALE_BARS_DAYS = 5;
 
 export async function priceAndVolume(tracked: Tracked[]): Promise<AlertDraft[]> {
   const out: AlertDraft[] = [];
@@ -65,6 +66,9 @@ export async function priceAndVolume(tracked: Tracked[]): Promise<AlertDraft[]> 
     if (!loaded || loaded.bars.length < 30) continue;
     const bars = loaded.bars;
     const last = bars[bars.length - 1];
+    // With Yahoo down the bars come from the table, which may end days ago; an
+    // old move is not news and must not be raised as today's alert.
+    if (Date.now() - Date.parse(last.date) > STALE_BARS_DAYS * 86_400_000) continue;
     const returns = simpleReturns(bars.map((b) => b.close));
     const move = returns[returns.length - 1];
     const history = returns.slice(0, -1);
@@ -190,7 +194,8 @@ export async function thesisAndMemory(): Promise<AlertDraft[]> {
       severity: "high",
       title: `The thesis on ${ticker} no longer holds`,
       detail: breaches.map((b) => `${b.rule.metric} is ${Number(b.actual.toPrecision(4))} (rule: ${b.rule.operator} ${b.rule.value})`).join("; "),
-      dedupeKey: `thesis:${ticker}:${breaches.map((b) => `${b.rule.metric}${b.rule.operator}${b.rule.value}`).join(",")}`,
+      // keyed by the theses that broke, so a second thesis with the same rules still alerts
+      dedupeKey: `thesis:${ticker}:${[...new Set(breaches.map((b) => b.thesisId))].sort().join(",")}`,
       held: false,
       weight: null,
       move: null,

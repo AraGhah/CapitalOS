@@ -3,6 +3,7 @@ import { FUNDAMENTAL_METRICS } from "./edgar";
 import { DERIVED_METRICS } from "./metrics";
 import { latestMetrics } from "./scoring";
 import { addJournal } from "./ai/journal";
+import { isUuid } from "./ids";
 
 export type Operator = "<" | ">" | "<=" | ">=";
 
@@ -155,13 +156,28 @@ export async function openThesis(
   return rows[0].id;
 }
 
-export async function setThesisStatus(id: string, status: Thesis["status"]): Promise<void> {
-  await pool.query(`UPDATE theses SET status = $2 WHERE id = $1`, [id, status]);
+// An open thesis on the same company with exactly these rules, so adopting the
+// same committee twice does not leave two identical tripwires.
+export async function findOpenThesis(companyId: string, rules: Rule[]): Promise<string | null> {
+  const { rows } = await pool.query(
+    `SELECT id FROM theses
+     WHERE company_id = $1 AND status = 'open' AND invalidation_rules = $2::jsonb
+     LIMIT 1`,
+    [companyId, JSON.stringify(rules)]
+  );
+  return rows[0]?.id ?? null;
+}
+
+// Returns whether a thesis with that id existed.
+export async function setThesisStatus(id: string, status: Thesis["status"]): Promise<boolean> {
+  if (!isUuid(id)) return false;
+  const { rowCount } = await pool.query(`UPDATE theses SET status = $2 WHERE id = $1`, [id, status]);
+  return (rowCount ?? 0) > 0;
 }
 
 export interface CheckSummary {
   checked: number;
-  invalidated: Array<{ ticker: string; rule: Rule; actual: number }>;
+  invalidated: Array<{ thesisId: string; ticker: string; rule: Rule; actual: number }>;
   unresolved: Array<{ ticker: string; metric: string }>;
 }
 
@@ -177,6 +193,7 @@ export async function checkOpenTheses(): Promise<CheckSummary> {
         summary.unresolved.push({ ticker: evaluation.thesis.ticker, metric: check.rule.metric });
       } else if (check.breached) {
         summary.invalidated.push({
+          thesisId: evaluation.thesis.id,
           ticker: evaluation.thesis.ticker,
           rule: check.rule,
           actual: check.actual,

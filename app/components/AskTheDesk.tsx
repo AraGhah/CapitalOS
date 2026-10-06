@@ -15,6 +15,9 @@ interface Turn {
   toolCalls: ToolCall[];
 }
 
+// Written by the search bar just before it navigates here.
+export const PENDING_KEY = "capitalos.pending-question";
+
 // The transcript lives in the database rather than in this component, so a refresh
 // keeps the conversation and the tool trace that justifies each answer.
 export function AskTheDesk({ initialQuestion }: { initialQuestion?: string }) {
@@ -74,11 +77,22 @@ export function AskTheDesk({ initialQuestion }: { initialQuestion?: string }) {
         setTurns(body.messages ?? []);
         setLoaded(true);
 
-        // A company name typed into the search bar arrives as ?q= and is asked once.
-        if (initialQuestion && !asked.current) {
-          asked.current = true;
-          void send(initialQuestion);
+        if (asked.current) return;
+        asked.current = true;
+
+        // A question typed into this desk's own search bar is handed over through
+        // sessionStorage and asked straight away. One that arrives in the URL only
+        // fills the box: a link from anywhere else must not be able to make the
+        // copilot spend model calls without the person pressing Ask.
+        let pending: string | null = null;
+        try {
+          pending = sessionStorage.getItem(PENDING_KEY);
+          sessionStorage.removeItem(PENDING_KEY);
+        } catch {
+          pending = null;
         }
+        if (pending && pending === initialQuestion) void send(pending);
+        else if (initialQuestion) setQuestion(initialQuestion);
       })
       .catch(() => {
         if (!cancelled) setLoaded(true);

@@ -49,10 +49,13 @@ export function LivePrice({ ticker, fallback }: { ticker: string; fallback: Pric
       }))
     : fallback;
 
-  const first = points.find((p) => p.close !== null)?.close ?? null;
-  const lastClose = [...points].reverse().find((p) => p.close !== null)?.close ?? null;
+  // The day's move, live or from the last two stored closes — the same measure
+  // either way, so the pill does not change meaning when Yahoo is down.
+  const closes = points.map((p) => p.close).filter((c): c is number => c !== null);
+  const lastClose = closes.at(-1) ?? null;
+  const priorClose = closes.at(-2) ?? null;
   const movePct =
-    chart?.changePct ?? (first && lastClose ? ((lastClose - first) / first) * 100 : null);
+    chart?.changePct ?? (priorClose && lastClose !== null ? ((lastClose - priorClose) / priorClose) * 100 : null);
   const price = chart?.price ?? lastClose;
 
   return (

@@ -1,5 +1,7 @@
 "use client";
 
+import { request } from "@/app/components/request";
+
 import { useEffect, useState, type FormEvent } from "react";
 
 interface TxnRow {
@@ -22,12 +24,16 @@ export default function TransactionsPage() {
     qty: "",
     price: "",
     fees: "0",
-    executedAt: new Date().toISOString().slice(0, 10),
+    // the local calendar date; toISOString() is UTC, which is tomorrow by evening
+    executedAt: new Date().toLocaleDateString("en-CA"),
   });
 
   async function loadRows(): Promise<TxnRow[]> {
-    const res = await fetch("/api/transactions");
-    return res.json();
+    const res = await request("/api/transactions");
+    // an error body is an object, not rows; the table shows empty rather than crashing
+    if (!res.ok) return [];
+    const body = await res.json().catch(() => []);
+    return Array.isArray(body) ? body : [];
   }
 
   useEffect(() => {
@@ -38,14 +44,14 @@ export default function TransactionsPage() {
     e.preventDefault();
     setStatus(null);
 
-    const res = await fetch("/api/transactions", {
+    const res = await request("/api/transactions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(form),
     });
 
     if (!res.ok) {
-      const body = await res.json();
+      const body = await res.json().catch(() => ({}));
       setStatus(body.error ?? "something went wrong");
       return;
     }

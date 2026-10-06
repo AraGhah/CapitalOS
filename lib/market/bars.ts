@@ -21,6 +21,7 @@ export interface Loaded {
 
 const CACHE_MS = 30 * 60_000;
 const MIN_BARS = 60;
+const MAX_CACHED = 400;
 const cache = new Map<string, { at: number; loaded: Loaded | null }>();
 
 // range is Yahoo's: "1y" for risk and momentum, "10y" for a backtest.
@@ -51,6 +52,10 @@ export async function loadBars(ticker: string, range: "1y" | "5y" | "10y" = "1y"
     }
   }
 
+  // What-if baskets can name any ticker, so the cache is bounded: the oldest
+  // entry goes once it is full (a Map iterates in insertion order).
+  cache.delete(key);
+  if (cache.size >= MAX_CACHED) cache.delete(cache.keys().next().value as string);
   cache.set(key, { at: Date.now(), loaded });
   return loaded;
 }

@@ -34,14 +34,27 @@ export async function POST(req: NextRequest) {
 
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (event: RunEvent) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      // A closed tab cancels the stream, after which enqueue throws. The run is
+      // already paying for its model calls, so it carries on and is saved; only
+      // the progress lines stop.
+      let open = true;
+      const send = (event: RunEvent) => {
+        if (!open) return;
+        try {
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        } catch {
+          open = false;
+        }
+      };
       try {
         await runConsensus(
           {
             ticker,
             mode,
             focus: typeof body.focus === "string" ? body.focus.slice(0, 400) : null,
-            modelIds: Array.isArray(body.modelIds) ? body.modelIds.filter((id) => typeof id === "string") : undefined,
+            modelIds: Array.isArray(body.modelIds)
+              ? body.modelIds.filter((id): id is string => typeof id === "string").slice(0, 20)
+              : undefined,
             force: body.force === true,
           },
           send
@@ -49,7 +62,13 @@ export async function POST(req: NextRequest) {
       } catch (err) {
         send({ type: "error", message: err instanceof Error ? err.message : String(err) });
       } finally {
-        controller.close();
+        if (open) {
+          try {
+            controller.close();
+          } catch {
+            // already closed by the client
+          }
+        }
       }
     },
   });

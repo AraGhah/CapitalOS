@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getFilings, getPriceHistory } from "@/lib/company";
-import { resolveCompany } from "@/lib/resolve";
+import { findCompany, getFilings, getPriceHistory } from "@/lib/company";
+import { lookupTicker } from "@/lib/resolve";
+import { AddToDesk } from "@/app/components/AddToDesk";
 import { RESEARCH_FIELDS, getResearchNote } from "@/lib/research";
 import { getScores } from "@/lib/scoring";
 import { getHeadlines, getLatestDossier } from "@/lib/dossier";
@@ -34,10 +35,27 @@ function label(component: string): string {
 export default async function ResearchPage({ params }: PageProps<"/research/[ticker]">) {
   const { ticker } = await params;
 
-  // A ticker the desk has not seen gets a companies row here, so searching one
-  // lands on a page that can research it. A symbol nothing recognises is a 404.
-  const company = await resolveCompany(ticker).catch(() => null);
-  if (!company) notFound();
+  // Viewing a page never writes. A real symbol the desk has not seen gets an
+  // offer to add it; a symbol nothing recognises is a 404.
+  const company = await findCompany(ticker);
+  if (!company) {
+    const found = await lookupTicker(ticker);
+    if (!found) notFound();
+    return (
+      <div>
+        <div className="page-head">
+          <div>
+            <p className="eyebrow">unclassified</p>
+            <h1>
+              <span className="num">{found.ticker}</span>{" "}
+              <span style={{ fontWeight: 400, color: "var(--muted)" }}>{found.name}</span>
+            </h1>
+          </div>
+        </div>
+        <AddToDesk ticker={found.ticker} name={found.name} />
+      </div>
+    );
+  }
 
   const [note, headlines, dossier, bars, filings, scores, committees] = await Promise.all([
     getResearchNote(company.id, company.ticker, company.name),
@@ -212,15 +230,16 @@ export default async function ResearchPage({ params }: PageProps<"/research/[tic
                   <table style={{ marginTop: "0.9rem" }}>
                     <tbody>
                       {score.components.map((c) => (
-                        <tr key={c.component}>
+                        <tr key={c.component} className={c.imputed ? "subtle" : undefined}>
                           <td className="wide" style={{ paddingLeft: 0 }}>
                             {label(c.component)}
+                            {c.imputed && <span className="subtle"> · no data</span>}
                           </td>
                           <td>
                             <Meter share={c.percentile} />
                           </td>
                           <td className="num" style={{ paddingRight: 0 }}>
-                            {(c.percentile * 100).toFixed(0)}
+                            {c.imputed ? "—" : (c.percentile * 100).toFixed(0)}
                           </td>
                         </tr>
                       ))}

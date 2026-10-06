@@ -1,5 +1,5 @@
 import { pool } from "./db";
-import { cachedJson } from "./sec";
+import { cachedJson, DAY_MS } from "./sec";
 import { padCik } from "./edgar";
 import { fetchChart } from "./quote";
 import { findCompany, type CompanyRow } from "./company";
@@ -16,10 +16,12 @@ interface TickerEntry {
   title: string;
 }
 
-let tickerMap: Map<string, TickerEntry> | null = null;
+let tickerMap: { at: number; map: Map<string, TickerEntry> } | null = null;
 
+// Kept in memory for a day, like the file cache behind it, so a long-running
+// server still learns about companies that listed after it started.
 async function loadTickerMap(): Promise<Map<string, TickerEntry>> {
-  if (tickerMap) return tickerMap;
+  if (tickerMap && Date.now() - tickerMap.at < DAY_MS) return tickerMap.map;
 
   const data = (await cachedJson(
     "company-tickers",
@@ -28,7 +30,7 @@ async function loadTickerMap(): Promise<Map<string, TickerEntry>> {
 
   const map = new Map<string, TickerEntry>();
   for (const entry of Object.values(data)) map.set(entry.ticker.toUpperCase(), entry);
-  tickerMap = map;
+  tickerMap = { at: Date.now(), map };
   return map;
 }
 
@@ -39,6 +41,37 @@ export class UnknownTickerError extends Error {
   }
 }
 
+export interface TickerLookup {
+  ticker: string;
+  name: string;
+  cik: string | null;
+}
+
+// Whether a symbol is real, and what it is called — without writing anything.
+// SEC's ticker file first, Yahoo for funds and foreign listings.
+export async function lookupTicker(rawTicker: string): Promise<TickerLookup | null> {
+  const ticker = rawTicker.trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(ticker)) return null;
+
+  try {
+    const entry = (await loadTickerMap()).get(ticker);
+    if (entry) return { ticker, name: entry.title, cik: padCik(entry.cik_str) };
+  } catch {
+    // SEC unreachable — Yahoo below is the remaining way to confirm the symbol.
+  }
+
+  try {
+    const chart = await fetchChart(ticker, "5d");
+    if (chart.bars.length > 0 || chart.price !== null) return { ticker, name: ticker, cik: null };
+  } catch {
+    // not a symbol Yahoo knows either
+  }
+  return null;
+}
+
+// The company row for a ticker, created if the symbol is real and the desk has
+// not seen it. Only called where creating it is the point: researching,
+// watching, trading, convening — never from a page view.
 export async function resolveCompany(rawTicker: string): Promise<CompanyRow> {
   const ticker = rawTicker.trim().toUpperCase();
   if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(ticker)) throw new UnknownTickerError(rawTicker);
@@ -46,34 +79,13 @@ export async function resolveCompany(rawTicker: string): Promise<CompanyRow> {
   const existing = await findCompany(ticker);
   if (existing) return existing;
 
-  let name: string | null = null;
-  let cik: string | null = null;
-
-  try {
-    const entry = (await loadTickerMap()).get(ticker);
-    if (entry) {
-      name = entry.title;
-      cik = padCik(entry.cik_str);
-    }
-  } catch {
-    // SEC unreachable — Yahoo below is the remaining way to confirm the symbol.
-  }
-
-  if (!name) {
-    try {
-      const chart = await fetchChart(ticker, "5d");
-      if (chart.bars.length > 0 || chart.price !== null) name = ticker;
-    } catch {
-      // not a symbol Yahoo knows either
-    }
-  }
-
-  if (!name) throw new UnknownTickerError(ticker);
+  const found = await lookupTicker(ticker);
+  if (!found) throw new UnknownTickerError(ticker);
 
   await pool.query(
     `INSERT INTO companies (ticker, name, cik) VALUES ($1, $2, $3)
      ON CONFLICT (ticker) DO UPDATE SET name = EXCLUDED.name`,
-    [ticker, name, cik]
+    [found.ticker, found.name, found.cik]
   );
 
   const created = await findCompany(ticker);

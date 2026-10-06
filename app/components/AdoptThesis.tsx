@@ -1,5 +1,7 @@
 "use client";
 
+import { request } from "@/app/components/request";
+
 import Link from "next/link";
 import { useState } from "react";
 
@@ -10,7 +12,7 @@ export function AdoptThesis({ runId, rules }: { runId: string; rules: string[] }
   async function adopt() {
     setState("saving");
     setError(null);
-    const res = await fetch(`/api/consensus/${runId}/adopt`, { method: "POST" });
+    const res = await request(`/api/consensus/${runId}/adopt`, { method: "POST" });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       setError(body.error ?? "the thesis could not be opened");

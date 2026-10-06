@@ -1,5 +1,6 @@
 import { fetchArticles, searchName, type Article } from "./news";
 import { domainOf } from "./format";
+import { isWebUrl } from "./url";
 
 // Five free, public discovery feeds. None needs a key, all of them go down
 // sometimes, and each one reports its own outcome so the rail can say which was
@@ -74,10 +75,13 @@ function decodeEntities(text: string): string {
     nbsp: " ",
     "#39": "'",
   };
-  return text.replace(/&(#\d+|[a-z]+);/gi, (whole, entity: string) => {
+  return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, entity: string) => {
     const key = entity.toLowerCase();
     if (named[key]) return named[key];
-    if (entity.startsWith("#")) return String.fromCharCode(Number(entity.slice(1)));
+    if (key.startsWith("#")) {
+      const n = key.startsWith("#x") ? parseInt(key.slice(2), 16) : Number(key.slice(1));
+      return Number.isInteger(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : whole;
+    }
     return whole;
   });
 }
@@ -178,6 +182,7 @@ function dedupe(articles: Article[]): Article[] {
   const seen = new Set<string>();
   const out: Article[] = [];
   for (const article of articles) {
+    if (!isWebUrl(article.url)) continue;
     const key = article.url.split("?")[0];
     if (seen.has(key)) continue;
     seen.add(key);

@@ -38,7 +38,31 @@ export interface Check {
 
 export interface Figure {
   raw: string;
-  candidates: Array<{ value: number; units: Array<string | undefined>; tolerance: number }>;
+  candidates: Array<{
+    value: number;
+    units: Array<string | undefined>;
+    tolerance: number;
+    // when set, the candidate only applies to items whose label matches
+    labels?: RegExp;
+  }>;
+  // the direction the sentence gives the figure ("fell 4%", "-4%"), when it
+  // gives one; null for a level ("fell to 4%") or a figure with no direction
+  direction?: "up" | "down" | null;
+}
+
+const DOWN_WORDS = /\b(fell|falls?|falling|declin\w*|dropp?\w*|down|lower|shr[ai]nk\w*|contract\w*|decreas\w*|slump\w*|plung\w*|cut|loss(es)?|negative|worse)\b/g;
+const UP_WORDS = /\b(grew|grow\w*|rose|rises?|rising|up|increas\w*|gain\w*|higher|expand\w*|jump\w*|surg\w*|climb\w*|positive|improv\w*)\b/g;
+
+// The last direction word in the few words before a figure. "to" right before
+// it makes the figure a level ("fell to 4%"), which has no direction.
+function directionBefore(context: string, explicitMinus: boolean): "up" | "down" | null {
+  if (explicitMinus) return "down";
+  const window = context.slice(-48).toLowerCase();
+  if (/\b(to|at|of)\s*\$?\s*$/.test(window)) return null;
+  let last: { at: number; dir: "up" | "down" } | null = null;
+  for (const m of window.matchAll(DOWN_WORDS)) if (!last || m.index! > last.at) last = { at: m.index!, dir: "down" };
+  for (const m of window.matchAll(UP_WORDS)) if (!last || m.index! > last.at) last = { at: m.index!, dir: "up" };
+  return last?.dir ?? null;
 }
 
 // Numbers that are labels rather than quantities: evidence ids, dates, filing
@@ -101,26 +125,46 @@ export function extractFigures(text: string): Figure[] {
     } else if (dollar) {
       candidates.push({ value, units: ["usd"], tolerance: half });
     } else {
-      candidates.push({ value, units: [undefined, "multiple", "percent", "count", "usd", "shares"], tolerance: half });
-      // Unit-less items on a 0..1 scale (percentiles) are often written out of 100.
-      candidates.push({ value: value / 100, units: [undefined], tolerance: half / 100 });
+      // A bare number is a multiple, a rate, a count or a score. It is not a
+      // dollar or share figure: "revenue of 281.7" without a unit or a scale
+      // must not pass as $281.7 because some item happens to hold that amount.
+      candidates.push({ value, units: [undefined, "multiple", "percent", "count"], tolerance: half });
+      // Percentiles are stored on a 0..1 scale and often written out of 100;
+      // that reading is only allowed against a percentile.
+      candidates.push({ value: value / 100, units: [undefined], tolerance: half / 100, labels: /percentile/i });
     }
 
-    figures.push({ raw: raw.trim(), candidates });
+    const isChange = unit === "%" || unit === "percent" || unit === "pp" || unit === "bps";
+    const direction = isChange ? directionBefore(clean.slice(0, match.index), Boolean(minus)) : null;
+    figures.push({ raw: raw.trim(), candidates, direction });
   }
   return figures;
 }
 
-// Sign is ignored: "revenue fell 4%" is written positive about a negative
-// growth figure, and that is a fair restatement rather than an error.
+// Magnitudes are compared without sign, because "revenue fell 4%" is a fair way
+// to write a growth figure of −0.04. What the sentence says about direction is
+// checked separately: "revenue grew 4%" against −0.04 is not a restatement, it
+// is the opposite claim, and is refused.
 const RELATIVE_SLACK = 0.015;
+
+// Items whose sign means up or down rather than being part of a level.
+const CHANGE_LABEL = /growth|change|return|trend|drawdown|y\/y|year over year|below the 52-week high/i;
 
 export function matches(figure: Figure, item: EvidenceItem): boolean {
   if (item.value === undefined) return false;
+  if (
+    figure.direction &&
+    item.value !== 0 &&
+    CHANGE_LABEL.test(item.label) &&
+    (figure.direction === "down") !== item.value < 0
+  ) {
+    return false;
+  }
   const actual = Math.abs(item.value);
 
   return figure.candidates.some((c) => {
     if (!c.units.includes(item.unit)) return false;
+    if (c.labels && !c.labels.test(item.label)) return false;
     const claimed = Math.abs(c.value);
     const allowance = Math.max(c.tolerance * 1.001, actual * RELATIVE_SLACK);
     return Math.abs(claimed - actual) <= allowance;

@@ -1,6 +1,7 @@
 import Decimal from "decimal.js";
 import { pool } from "../db";
 import { deriveMetrics, type PeriodFacts } from "../metrics";
+import { capitalisationShares } from "../edgar";
 import { loadBars, type Bar } from "../market/bars";
 import { METRICS, passes, type MetricKey, type ScreenRule } from "../scanner";
 import { annualisedVol, maxDrawdown, mean, TRADING_DAYS } from "../risk/stats";
@@ -204,7 +205,7 @@ function metricsAsOf(facts: FactRow[] | undefined, bars: Bar[], upto: number, da
 
   const [current, prior] = periods;
   const price = bars[upto].close;
-  const shares = current.values.get("shares_diluted");
+  const shares = capitalisationShares(current.values);
   const marketCap = shares && shares.gt(0) ? shares.mul(price) : null;
 
   for (const [key, value] of deriveMetrics({ current, prior, marketCap })) {
@@ -265,6 +266,7 @@ export async function runBacktest(spec: StrategySpec): Promise<BacktestResult> {
 
   // Each company's bars indexed by date, and a cursor into them per day.
   const index = universe.map((c) => new Map(c.bars.map((b, i) => [b.date, i])));
+  const tickerIndex = new Map(universe.map((c, u) => [c.ticker, u]));
   const startCut = new Date(Date.now() - spec.years * 365.25 * 86_400_000).toISOString().slice(0, 10);
   // A year of warm-up so momentum, 52-week highs and the 200-day average exist
   // on the first rebalance.
@@ -277,6 +279,10 @@ export async function runBacktest(spec: StrategySpec): Promise<BacktestResult> {
 
   const bps = (spec.costBps + spec.slippageBps) / 10_000;
   const holdings = new Map<string, number>(); // ticker → dollars
+  // The last close each holding was marked at. A day with no bar for a holding
+  // leaves it at that mark, and the next bar moves it from there, so a gap in a
+  // series delays a return rather than losing it.
+  const marks = new Map<string, number>();
   const openTrades = new Map<string, { entered: string; entryPrice: number }>();
   const trades: Trade[] = [];
   const rebalances: BacktestResult["rebalances"] = [];
@@ -298,10 +304,13 @@ export async function runBacktest(spec: StrategySpec): Promise<BacktestResult> {
     // 1. the day's moves
     if (prevDate) {
       for (const [ticker, dollars] of holdings) {
-        const u = universe.findIndex((c) => c.ticker === ticker);
+        const u = tickerIndex.get(ticker) as number;
         const today = priceOn(u, date);
-        const before = priceOn(u, prevDate);
-        if (today !== null && before !== null) holdings.set(ticker, (dollars * today) / before);
+        const before = marks.get(ticker) ?? null;
+        if (today !== null && before !== null) {
+          holdings.set(ticker, (dollars * today) / before);
+          marks.set(ticker, today);
+        }
       }
     }
     let value = cash + [...holdings.values()].reduce((s, v) => s + v, 0);
@@ -335,7 +344,7 @@ export async function runBacktest(spec: StrategySpec): Promise<BacktestResult> {
       // close trades no longer held, open new ones
       for (const [ticker, open] of openTrades) {
         if (target.has(ticker)) continue;
-        const exitPrice = priceOn(universe.findIndex((c) => c.ticker === ticker), date) ?? open.entryPrice;
+        const exitPrice = priceOn(tickerIndex.get(ticker) as number, date) ?? marks.get(ticker) ?? open.entryPrice;
         trades.push({ ticker, entered: open.entered, exited: date, entryPrice: open.entryPrice, exitPrice, return: exitPrice / open.entryPrice - 1 });
         openTrades.delete(ticker);
       }
@@ -344,8 +353,12 @@ export async function runBacktest(spec: StrategySpec): Promise<BacktestResult> {
       }
 
       holdings.clear();
+      marks.clear();
       const perPosition = chosen.length > 0 ? value / chosen.length : 0;
-      for (const c of chosen) holdings.set(c.ticker, perPosition);
+      for (const c of chosen) {
+        holdings.set(c.ticker, perPosition);
+        marks.set(c.ticker, c.price);
+      }
       cash = chosen.length > 0 ? 0 : value;
       rebalances.push({ date, holdings: chosen.map((c) => c.ticker), candidates: candidates.length });
     }
@@ -359,7 +372,7 @@ export async function runBacktest(spec: StrategySpec): Promise<BacktestResult> {
   // Positions still open are marked at the last close, so they count as trades.
   const last = days[days.length - 1];
   for (const [ticker, open] of openTrades) {
-    const exitPrice = priceOn(universe.findIndex((c) => c.ticker === ticker), last) ?? open.entryPrice;
+    const exitPrice = priceOn(tickerIndex.get(ticker) as number, last) ?? marks.get(ticker) ?? open.entryPrice;
     trades.push({ ticker, entered: open.entered, exited: null, entryPrice: open.entryPrice, exitPrice, return: exitPrice / open.entryPrice - 1 });
   }
 

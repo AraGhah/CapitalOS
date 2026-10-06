@@ -16,8 +16,17 @@ const SCHEDULE = process.env.AUTOPILOT_CRON ?? "*/30 * * * *";
 const once = process.argv.includes("--once");
 const convene = process.argv.includes("--convene") || process.env.AUTOPILOT_CONVENE === "1";
 
+let running = false;
+
 async function pass() {
   const stamp = new Date().toISOString();
+  // A pass that convenes committees can outlast the schedule; the next tick is
+  // skipped rather than stacked on top of it.
+  if (running) {
+    console.log(`${stamp} previous pass still running, skipping this one`);
+    return;
+  }
+  running = true;
   try {
     const s = await runCycle({ convene });
     console.log(
@@ -29,6 +38,8 @@ async function pass() {
     for (const e of s.errors) console.log(`  error: ${e}`);
   } catch (err) {
     console.error(`${stamp} autopilot pass failed: ${(err as Error).message}`);
+  } finally {
+    running = false;
   }
 }
 

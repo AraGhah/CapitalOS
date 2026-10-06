@@ -1,5 +1,6 @@
 import Decimal from "decimal.js";
-import { pool } from "./db";
+import { LOCKS, pool, withLock } from "./db";
+import { getSplits, splitFactor } from "./splits";
 import { resolveCompany } from "./resolve";
 import { fetchChart } from "./quote";
 import { buildPosition, type Txn } from "./portfolio";
@@ -45,24 +46,39 @@ interface TradeRow {
   rationale: string | null;
 }
 
+// Every trade in today's shares: a split after a paper buy restates its
+// quantity and price (never the dollars), the same way the real ledger is read.
+// A trade whose SPY price was not caught when it was placed falls back to SPY's
+// stored close on that day, so one failed quote does not void the benchmark.
 async function trades(): Promise<TradeRow[]> {
   const { rows } = await pool.query(
-    `SELECT p.id, p.created_at, c.ticker, p.side, p.qty, p.price, p.fees, p.spy_price, p.run_id, p.rationale
+    `SELECT p.id, p.created_at, p.company_id, c.ticker, p.side, p.qty, p.price, p.fees, p.spy_price, p.run_id, p.rationale,
+            COALESCE(p.spy_price, (
+              SELECT pd.close FROM prices_daily pd JOIN companies s ON s.id = pd.company_id
+              WHERE s.ticker = 'SPY' AND pd.date <= p.created_at::date AND pd.close IS NOT NULL
+              ORDER BY pd.date DESC LIMIT 1
+            )) AS spy_basis
      FROM paper_trades p JOIN companies c ON c.id = p.company_id
      ORDER BY p.created_at, p.id`
   );
-  return rows.map((r) => ({
-    id: r.id,
-    createdAt: (r.created_at as Date).toISOString(),
-    ticker: r.ticker,
-    side: r.side,
-    qty: Number(r.qty),
-    price: Number(r.price),
-    fees: Number(r.fees),
-    spyPrice: r.spy_price === null ? null : Number(r.spy_price),
-    runId: r.run_id,
-    rationale: r.rationale,
-  }));
+  const splits = await getSplits([...new Set(rows.map((r) => r.company_id as string))]);
+
+  return rows.map((r) => {
+    const createdAt = (r.created_at as Date).toISOString();
+    const factor = splitFactor(splits.get(r.company_id), createdAt.slice(0, 10));
+    return {
+      id: r.id,
+      createdAt,
+      ticker: r.ticker,
+      side: r.side,
+      qty: new Decimal(r.qty).mul(factor).toNumber(),
+      price: new Decimal(r.price).div(factor).toNumber(),
+      fees: Number(r.fees),
+      spyPrice: r.spy_basis === null ? null : Number(r.spy_basis),
+      runId: r.run_id,
+      rationale: r.rationale,
+    };
+  });
 }
 
 function cashAfter(list: TradeRow[]): Decimal {
@@ -87,6 +103,18 @@ export async function placeOrder(input: {
   if (!Number.isFinite(qty) || qty <= 0) throw new PaperError("an order needs a positive quantity or dollar amount");
   qty = Math.floor(qty * 1e6) / 1e6;
 
+  // The cash and holdings check and the insert happen under one lock, so two
+  // orders placed together cannot both spend the same paper cash.
+  return withLock(LOCKS.paperOrders, () => fill(company, input, qty, price, spy));
+}
+
+async function fill(
+  company: { id: string; ticker: string },
+  input: { side: "buy" | "sell"; runId?: string | null; rationale?: string | null },
+  qty: number,
+  price: number,
+  spy: number | null
+): Promise<TradeRow> {
   const history = await trades();
   if (input.side === "buy") {
     const cash = cashAfter(history);
@@ -203,10 +231,14 @@ export async function paperPortfolio(): Promise<PaperPortfolio> {
   const value = cash + invested;
   for (const p of positions) p.weight = value > 0 ? p.value / value : 0;
 
-  // The same cash flows into SPY: each buy buys SPY, each sell sells SPY, at the
-  // SPY price recorded with the trade.
+  // The same cash flows into SPY, position by position: a buy of a stock buys
+  // that many dollars of SPY against it, and selling part of the stock sells the
+  // same fraction of the SPY bought against it. Selling the stock's proceeds'
+  // worth of SPY instead would sell SPY that was never bought whenever the
+  // stock had beaten it, leaving the benchmark short.
   const spyNow = prices.get("SPY") ?? null;
-  let spyShares = 0;
+  const spyByTicker = new Map<string, number>();
+  const sharesByTicker = new Map<string, number>();
   let spyCash = STARTING_CAPITAL;
   let benchmarkComplete = spyNow !== null;
   for (const t of list) {
@@ -215,14 +247,21 @@ export async function paperPortfolio(): Promise<PaperPortfolio> {
       break;
     }
     const dollars = t.qty * t.price;
+    const shares = sharesByTicker.get(t.ticker) ?? 0;
+    const spyShares = spyByTicker.get(t.ticker) ?? 0;
     if (t.side === "buy") {
-      spyShares += dollars / t.spyPrice;
+      spyByTicker.set(t.ticker, spyShares + dollars / t.spyPrice);
+      sharesByTicker.set(t.ticker, shares + t.qty);
       spyCash -= dollars + t.fees;
     } else {
-      spyShares -= dollars / t.spyPrice;
-      spyCash += dollars - t.fees;
+      const fraction = shares > 0 ? Math.min(1, t.qty / shares) : 0;
+      const sold = spyShares * fraction;
+      spyByTicker.set(t.ticker, spyShares - sold);
+      sharesByTicker.set(t.ticker, Math.max(0, shares - t.qty));
+      spyCash += sold * t.spyPrice - t.fees;
     }
   }
+  const spyShares = [...spyByTicker.values()].reduce((s, v) => s + v, 0);
   const benchmarkValue = benchmarkComplete && spyNow !== null ? spyCash + spyShares * spyNow : null;
 
   const hypotheses: Hypothesis[] = list

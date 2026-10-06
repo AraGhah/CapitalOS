@@ -1,4 +1,4 @@
-import { pool } from "../db";
+import { LOCKS, pool, tryWithLock } from "../db";
 import { ACCOUNT_ID } from "../constants";
 import { getPortfolio } from "../holdings";
 import { runConsensus } from "../ai/committee";
@@ -47,7 +47,23 @@ export interface CycleSummary {
   errors: string[];
 }
 
+export class CycleBusyError extends Error {
+  constructor() {
+    super("another autopilot pass is still running; this one was skipped");
+    this.name = "CycleBusyError";
+  }
+}
+
+// One pass at a time across every process: a pass that convenes committees can
+// outlast the schedule, and two overlapping passes would both see room under the
+// daily committee cap and both spend it.
 export async function runCycle(opts: CycleOptions): Promise<CycleSummary> {
+  const summary = await tryWithLock(LOCKS.autopilotCycle, () => cycle(opts));
+  if (summary === null) throw new CycleBusyError();
+  return summary;
+}
+
+async function cycle(opts: CycleOptions): Promise<CycleSummary> {
   const { rows: started } = await pool.query(`INSERT INTO autopilot_runs DEFAULT VALUES RETURNING id`);
   const runId = started[0].id as string;
   const errors: string[] = [];
@@ -116,7 +132,11 @@ export async function runCycle(opts: CycleOptions): Promise<CycleSummary> {
       skippedConvening = "no model key configured";
     } else {
       const { rows: today } = await pool.query(
-        `SELECT count(*)::int AS n FROM alerts WHERE run_id IS NOT NULL AND created_at >= date_trunc('day', now())`
+        // committees the autopilot actually started today; a cached report it
+        // pointed an alert at was paid for on another day and does not count
+        `SELECT count(DISTINCT r.id)::int AS n
+         FROM alerts a JOIN consensus_runs r ON r.id = a.run_id
+         WHERE r.created_at >= date_trunc('day', now())`
       );
       let room = Math.max(0, MAX_COMMITTEES - today[0].n);
       for (const alert of worth) {

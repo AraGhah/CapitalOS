@@ -1,6 +1,7 @@
 import { pool } from "./db";
 import { latestMetrics, getScores } from "./scoring";
 import { loadBars, momentum } from "./market/bars";
+import { capitalisationShares } from "./edgar";
 
 /* ---------------------------------------------------------------------------
    The opportunity scanner.
@@ -223,7 +224,7 @@ async function metricsFor(company: { id: string; ticker: string }, scores: Map<s
 
     // Valuation from the same price and the latest annual figures.
     const raw = facts.raw;
-    const shares = raw.get("shares_diluted")?.toNumber();
+    const shares = capitalisationShares(raw)?.toNumber();
     if (shares && shares > 0) {
       const cap = m.last * shares;
       const income = raw.get("net_income")?.toNumber();

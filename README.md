@@ -13,8 +13,8 @@ npm install
 docker compose up -d                  # Postgres on :5433, or point DATABASE_URL anywhere
 psql -U capitalos -d capitalos -f schema.sql
 npm run migrate-desk                  # the research-desk tables
-npm run migrate                       # every idempotent layer: desk, consensus, lab, autopilot
-npm run dev
+npm run migrate                       # every idempotent layer: desk, consensus, lab, autopilot, hardening (splits, ledger checks)
+npm run dev                           # serves http://127.0.0.1:3000 only
 ```
 
 `.env.local`:
@@ -24,7 +24,7 @@ npm run dev
 | `DATABASE_URL` | everything | the app cannot start |
 | `SEC_USER_AGENT` | EDGAR and GDELT politeness | a default contact string is sent |
 | `ANTHROPIC_API_KEY` | the strategist's brief, and the chat | verdicts still come out, from the sentiment counts; the brief renders as missing and the chat is unavailable |
-| `ANTHROPIC_MODEL` | overriding the model | `claude-opus-5` |
+| `ANTHROPIC_MODEL` | overriding the model | `claude-opus-5-5` |
 | `DAILY_DOSSIER_BUDGET` | capping spend | 40 pipeline runs per day, then runs stop |
 | `OPENAI_API_KEY` | hosted embeddings for event clustering | local hashed-token vectors |
 | `ALPHA_VANTAGE_API_KEY` | `fetch-prices` | use `fetch-prices-yahoo` instead, which needs no key |
@@ -36,6 +36,31 @@ npm run dev
 | `AUTOPILOT_CRON` | how often `npm run autopilot` passes | every 30 minutes |
 | `AUTOPILOT_CONVENE=1` | letting the autopilot convene committees | alerts only, no model calls |
 | `AUTOPILOT_MAX_COMMITTEES`, `AUTOPILOT_MODE` | the autopilot's daily committee cap and mode | 3 a day, standard |
+| `DAILY_CHAT_BUDGET` | capping copilot questions | 150 a day, then the chat refuses |
+| `CAPITALOS_TOKEN` | requiring an access token | anyone who can reach the server is let in (it only listens on 127.0.0.1) |
+| `CAPITALOS_ALLOWED_HOSTS` | serving under another host name, e.g. a LAN IP | only `localhost`, `127.0.0.1` and `[::1]` are served |
+| `POSTGRES_PASSWORD` (shell, for `docker compose`) | a real database password | `capitalos`, with the port bound to 127.0.0.1 |
+
+## Access
+
+The desk holds a brokerage ledger and spends model credits, so `proxy.ts` sits in
+front of every page and route:
+
+- `npm run dev` / `npm start` listen on `127.0.0.1` only. To reach the desk from
+  another device, run it with `-H 0.0.0.0`, add that device-facing host to
+  `CAPITALOS_ALLOWED_HOSTS`, **and** set `CAPITALOS_TOKEN`.
+- With `CAPITALOS_TOKEN` set, open `/?token=<value>` once per browser (it is kept
+  in an httpOnly cookie) or send `Authorization: Bearer <value>` from scripts.
+- Writes from another site are refused (Origin / Sec-Fetch-Site), and write bodies
+  must be `application/json`, so a web page cannot place trades, write the ledger
+  or convene a committee on your behalf.
+- A question in an `/ask?q=` link is only pre-filled; it runs when you press Ask.
+- Opening `/research/<ticker>` for a symbol the desk has not seen only offers to
+  add it; nothing is written until you press the button.
+
+Market capitalisation uses shares outstanding at the period end
+(`shares_outstanding`) and falls back to diluted weighted shares. After updating,
+run `npm run ingest-edgar` once to pick the new figure up.
 
 With only `ANTHROPIC_API_KEY`, the committee seats Claude Opus, Sonnet and Haiku
 (`models.json`). Different providers disagree for more useful reasons than three

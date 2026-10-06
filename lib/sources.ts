@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { pool } from "./db";
 import { getFilingText } from "./filing-text";
+import { isUuid } from "./ids";
 
 export interface SourceRow {
   id: string;
@@ -19,7 +20,7 @@ function hash(text: string): string {
 // The document URL carries the accession in its path, which is how a stored
 // source finds its way back to the filing it was taken from. sources has no
 // column for it, and inventing one would mean changing the schema from Step 0.
-function accessionFromUrl(url: string): string | null {
+export function accessionFromUrl(url: string): string | null {
   const match = url.match(/\/data\/\d+\/(\d{18})\//);
   if (!match) return null;
   const digits = match[1];
@@ -69,6 +70,7 @@ export async function registerFilingSource(
 }
 
 export async function getSource(sourceId: string): Promise<SourceRow | null> {
+  if (!isUuid(sourceId)) return null;
   const { rows } = await pool.query(
     `SELECT id, kind, url, title, published_at, retrieved_at, raw_hash FROM sources WHERE id = $1`,
     [sourceId]
@@ -114,4 +116,26 @@ export async function getSourceText(source: SourceRow): Promise<string> {
     throw new Error(`document at ${source.url} has changed since it was recorded`);
   }
   return text;
+}
+
+// Whether a source is about this company: a filing it filed, or a headline or
+// news event stored against it. A claim about one company may not cite another
+// company's 10-K just because the quote happens to appear in it.
+export async function sourceBelongsTo(source: SourceRow, companyId: string): Promise<boolean> {
+  if (source.kind === "filing") {
+    const accession = accessionFromUrl(source.url);
+    if (!accession) return false;
+    const { rows } = await pool.query(`SELECT 1 FROM filings WHERE accession = $1 AND company_id = $2`, [
+      accession,
+      companyId,
+    ]);
+    return rows.length > 0;
+  }
+  const { rows } = await pool.query(
+    `SELECT EXISTS (SELECT 1 FROM headlines WHERE source_id = $1 AND company_id = $2)
+         OR EXISTS (SELECT 1 FROM event_sources es JOIN events e ON e.id = es.event_id
+                    WHERE es.source_id = $1 AND e.company_id = $2) AS ok`,
+    [source.id, companyId]
+  );
+  return rows[0].ok === true;
 }

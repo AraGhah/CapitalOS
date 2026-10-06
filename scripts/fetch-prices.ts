@@ -1,6 +1,8 @@
 import "../lib/env";
 import { pool } from "../lib/db";
+import Decimal from "decimal.js";
 import { BENCHMARK_TICKER } from "../lib/constants";
+import { fetchSplits, splitFactor, storeSplits, type Split } from "../lib/splits";
 
 const API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 
@@ -25,8 +27,8 @@ async function resolveCompanyId(ticker: string): Promise<string> {
 }
 
 async function fetchDaily(ticker: string): Promise<DailyBar[]> {
-  const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&outputsize=full&apikey=${API_KEY}`;
-  const res = await fetch(url);
+  const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${encodeURIComponent(ticker)}&outputsize=full&apikey=${API_KEY}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
   const data = await res.json();
 
   const series = data["Time Series (Daily)"];
@@ -48,15 +50,28 @@ async function fetchDaily(ticker: string): Promise<DailyBar[]> {
   });
 }
 
-async function upsertPrices(companyId: string, bars: DailyBar[]) {
+// TIME_SERIES_DAILY is not split-adjusted, while everything else the desk
+// stores (Yahoo bars) is. Each bar is restated in today's shares before it is
+// written, so a split never shows up as a crash in the stored closes.
+async function upsertPrices(companyId: string, bars: DailyBar[], splits: Split[]) {
   for (const bar of bars) {
+    const factor = splitFactor(splits, bar.date);
+    const adjust = (v: string) => new Decimal(v).div(factor).toDecimalPlaces(4).toString();
     await pool.query(
-      `INSERT INTO prices_daily (company_id, date, open, high, low, close, volume)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO prices_daily (company_id, date, open, high, low, close, volume, adj_close)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $6)
        ON CONFLICT (company_id, date) DO UPDATE SET
          open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-         close = EXCLUDED.close, volume = EXCLUDED.volume`,
-      [companyId, bar.date, bar.open, bar.high, bar.low, bar.close, bar.volume]
+         close = EXCLUDED.close, volume = EXCLUDED.volume, adj_close = EXCLUDED.adj_close`,
+      [
+        companyId,
+        bar.date,
+        adjust(bar.open),
+        adjust(bar.high),
+        adjust(bar.low),
+        adjust(bar.close),
+        new Decimal(bar.volume).mul(factor).round().toString(),
+      ]
     );
   }
 }
@@ -75,7 +90,14 @@ async function main() {
     console.log(`fetching ${ticker}...`);
     const companyId = await resolveCompanyId(ticker);
     const bars = await fetchDaily(ticker);
-    await upsertPrices(companyId, bars);
+    let splits: Split[] = [];
+    try {
+      splits = await fetchSplits(ticker);
+      await storeSplits(companyId, splits);
+    } catch (err) {
+      console.warn(`  splits unavailable (${err instanceof Error ? err.message : err}); closes stored unadjusted`);
+    }
+    await upsertPrices(companyId, bars, splits);
     console.log(`  ${bars.length} rows`);
 
     // free tier: 5 calls/min
@@ -85,4 +107,8 @@ async function main() {
   await pool.end();
 }
 
-main();
+main().catch(async (err) => {
+  console.error(err instanceof Error ? err.message : err);
+  await pool.end();
+  process.exit(1);
+});

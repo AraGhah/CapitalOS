@@ -90,6 +90,10 @@ export interface ConsensusReport {
   // invalidation conditions that are complete rules, which is what a thesis
   // can be opened on
   adoptableRules: RuleText[];
+  // the model that first proposed each of synthesis.assumptions, index for
+  // index, so the long-run record of which assumptions held is kept against
+  // the model that made them rather than the one that wrote the summary
+  assumptionAuthors?: Array<string | null>;
   coverage: EvidenceCoverage;
   cost: RunCost;
   degraded: string[];

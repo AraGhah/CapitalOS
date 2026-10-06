@@ -7,8 +7,8 @@ import {
   saveDossier,
   type Dossier,
 } from "@/lib/dossier";
-import { addToWatchlist } from "@/lib/company";
-import { budgetRemaining, BudgetExhaustedError } from "@/lib/llm";
+import { addToWatchlist, findCompany } from "@/lib/company";
+import { budgetRemaining, BudgetExhaustedError, reserveDossier } from "@/lib/llm";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -29,7 +29,9 @@ export type PipelineEvent =
 
 export async function GET(_req: NextRequest, ctx: { params: Promise<{ ticker: string }> }) {
   const { ticker } = await ctx.params;
-  const company = await resolveCompany(ticker);
+  // A read does not create rows: an unknown ticker is a 404, not a new company.
+  const company = await findCompany(ticker);
+  if (!company) return Response.json({ error: `the desk has no company "${ticker}"` }, { status: 404 });
   const dossier = await getLatestDossier(company.id);
 
   return Response.json({ company, dossier });
@@ -45,8 +47,25 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ ticker: st
 
   const stream = new ReadableStream({
     async start(controller) {
+      // After the client leaves, enqueue throws; the pipeline still finishes and
+      // saves what it paid for.
+      let open = true;
       function send(event: PipelineEvent) {
-        controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        if (!open) return;
+        try {
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        } catch {
+          open = false;
+        }
+      }
+      function close() {
+        if (!open) return;
+        open = false;
+        try {
+          controller.close();
+        } catch {
+          // already closed
+        }
       }
 
       try {
@@ -66,6 +85,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ ticker: st
           stored: scouted.stored,
         });
 
+        // Labelling headlines is model calls too, so an exhausted budget stops
+        // the run here rather than only before the strategist.
+        if ((await budgetRemaining()) <= 0) throw new BudgetExhaustedError();
+
         send({ phase: "analyst", status: "running" });
         const analysed = await analyst(company);
         send({
@@ -84,32 +107,36 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ ticker: st
           const cached = await getCachedDossier(company.id, hash);
           if (cached) {
             send({ phase: "cached", dossier: cached });
-            controller.close();
+            close();
             return;
           }
         }
 
-        if ((await budgetRemaining()) <= 0) throw new BudgetExhaustedError();
+        const release = await reserveDossier();
+        try {
+          send({ phase: "strategist", status: "running" });
+          const call = await strategist(company, analysed.headlines, analysed.sentiment);
 
-        send({ phase: "strategist", status: "running" });
-        const call = await strategist(company, analysed.headlines, analysed.sentiment);
-
-        await saveDossier({
-          companyId: company.id,
-          inputHash: hash,
-          headlineIds: analysed.headlines.map((h) => h.id),
-          verdict: call.verdict,
-          confidence: call.confidence,
-          risk: call.risk,
-          horizon: call.horizon,
-          brief: call.brief,
-          bull: call.bull,
-          bear: call.bear,
-          catalysts: call.catalysts,
-          sentiment: analysed.sentiment,
-          feeds: scouted.feeds,
-          provider: call.provider,
-        });
+          await saveDossier({
+            companyId: company.id,
+            inputHash: hash,
+            headlineIds: analysed.headlines.map((h) => h.id),
+            verdict: call.verdict,
+            confidence: call.confidence,
+            risk: call.risk,
+            horizon: call.horizon,
+            brief: call.brief,
+            bull: call.bull,
+            bear: call.bear,
+            catalysts: call.catalysts,
+            sentiment: analysed.sentiment,
+            feeds: scouted.feeds,
+            provider: call.provider,
+          });
+        } finally {
+          // the saved dossier now counts itself; the slot it held is released
+          await release();
+        }
 
         const saved = await getCachedDossier(company.id, hash);
         if (!saved) throw new Error("the dossier was written but could not be read back");
@@ -118,7 +145,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ ticker: st
       } catch (err) {
         send({ phase: "error", message: err instanceof Error ? err.message : String(err) });
       } finally {
-        controller.close();
+        close();
       }
     },
   });

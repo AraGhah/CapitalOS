@@ -1,5 +1,7 @@
 "use client";
 
+import { request } from "@/app/components/request";
+
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
@@ -15,7 +17,7 @@ export function JournalNote() {
     e.preventDefault();
     setSaving(true);
     setError(null);
-    const res = await fetch("/api/journal", {
+    const res = await request("/api/journal", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(form),

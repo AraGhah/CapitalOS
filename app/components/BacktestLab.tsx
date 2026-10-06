@@ -1,5 +1,7 @@
 "use client";
 
+import { request } from "@/app/components/request";
+
 import { useState } from "react";
 import type { BacktestResult, StrategySpec } from "@/lib/strategy/backtest";
 import { EquityChart } from "./EquityChart";
@@ -29,7 +31,7 @@ export function BacktestLab({ presets, metrics }: { presets: StrategySpec[]; met
   async function run() {
     setBusy(true);
     setError(null);
-    const res = await fetch("/api/strategy/backtest", {
+    const res = await request("/api/strategy/backtest", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(spec),

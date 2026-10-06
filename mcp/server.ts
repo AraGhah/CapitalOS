@@ -295,7 +295,9 @@ server.registerTool(
     if (typeof company === "string") return failed(company);
     if (!company.cik) return failed(`no CIK stored for ${company.ticker}; run ingest-edgar first`);
 
-    const filings = await getFilings(company.id, accession ? {} : { formType: "10-K", limit: 1 });
+    // An explicit accession is looked up among every filing on record, not just
+    // the most recent page of them.
+    const filings = await getFilings(company.id, accession ? { limit: 10_000 } : { formType: "10-K", limit: 1 });
     const filing = accession ? filings.find((f) => f.accession === accession) : filings[0];
     if (!filing) return failed(`no matching filing for ${company.ticker}`);
 
@@ -407,8 +409,12 @@ server.registerTool(
     const company = await resolve(ticker);
     if (typeof company === "string") return failed(company);
 
-    const result = await addClaims(company.id, field as ResearchField, claims);
-    return reply(result, [companySource(company)]);
+    try {
+      const result = await addClaims(company.id, field as ResearchField, claims);
+      return reply(result, [companySource(company)]);
+    } catch (err) {
+      return failed((err as Error).message);
+    }
   }
 );
 
@@ -497,7 +503,8 @@ server.registerTool(
     inputSchema: { id: z.string() },
   },
   async ({ id }) => {
-    await setThesisStatus(id, "closed");
+    const found = await setThesisStatus(id, "closed");
+    if (!found) return failed(`no thesis with id ${id}`);
     return reply({ id, status: "closed" }, []);
   }
 );
@@ -550,4 +557,8 @@ async function main() {
   await server.connect(new StdioServerTransport());
 }
 
-main();
+main().catch((err) => {
+  // stderr: stdout belongs to the MCP protocol
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+});

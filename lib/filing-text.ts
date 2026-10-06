@@ -1,4 +1,4 @@
-import { cachedJson, cachedText } from "./sec";
+import { cachedJson, cachedText, FOREVER } from "./sec";
 
 interface Heading {
   item: string;
@@ -81,7 +81,8 @@ function accessionPath(cik: string, accession: string): string {
 // back to the largest page that isn't an index or an R-numbered fragment.
 async function primaryDocument(cik: string, accession: string, formType: string): Promise<string> {
   const base = accessionPath(cik, accession);
-  const index = (await cachedJson(`idx-${accession}`, `${base}/index.json`)) as {
+  // A filing never changes once filed, so its index and documents are kept for good.
+  const index = (await cachedJson(`idx-${accession}`, `${base}/index.json`, false, FOREVER)) as {
     directory: { item: DirectoryItem[] };
   };
 
@@ -95,6 +96,12 @@ async function primaryDocument(cik: string, accession: string, formType: string)
   return `${base}/${chosen.name}`;
 }
 
+// One malformed entity in a 300-page filing must not throw away the whole
+// document, so an impossible code point becomes a space.
+function codePoint(n: number): string {
+  return Number.isInteger(n) && n >= 0 && n <= 0x10ffff ? String.fromCodePoint(n) : " ";
+}
+
 function htmlToText(html: string): string {
   return html
     .replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
@@ -106,8 +113,8 @@ function htmlToText(html: string): string {
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
     .replace(/&quot;/gi, '"')
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => codePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => codePoint(Number(dec)))
     .replace(/&amp;/gi, "&")
     .replace(/[ \t\u00a0]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
@@ -169,7 +176,7 @@ export async function getFilingText(
   formType: string
 ): Promise<{ url: string; text: string }> {
   const url = await primaryDocument(cik, accession, formType);
-  return { url, text: htmlToText(await cachedText(`doc-${accession}.htm`, url)) };
+  return { url, text: htmlToText(await cachedText(`doc-${accession}.htm`, url, false, FOREVER)) };
 }
 
 export interface FilingSection {
@@ -188,7 +195,7 @@ export async function getFilingSection(
   section: string,
   opts: { offset?: number; maxChars?: number } = {}
 ): Promise<FilingSection> {
-  if (!(section in SECTIONS)) {
+  if (!Object.hasOwn(SECTIONS, section)) {
     throw new Error(`unknown section "${section}"; try one of: ${SECTION_NAMES.join(", ")}`);
   }
 

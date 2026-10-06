@@ -3,6 +3,7 @@ import { join } from "path";
 import Decimal from "decimal.js";
 import { pool } from "./db";
 import { DERIVED_METRICS, deriveMetrics, type PeriodFacts } from "./metrics";
+import { capitalisationShares } from "./edgar";
 
 // Read fresh on every run rather than imported, so editing weights.json changes
 // the next score without a rebuild.
@@ -72,7 +73,7 @@ export async function latestMetrics(companyId: string): Promise<CompanyMetrics> 
   }
 
   const [current, prior] = periods;
-  const marketCap = await latestMarketCap(companyId, current.values.get("shares_diluted"));
+  const marketCap = await latestMarketCap(companyId, capitalisationShares(current.values));
 
   return {
     periodEnd: current.periodEnd,
@@ -112,42 +113,57 @@ export async function computeScores(asOf: string): Promise<{ companies: number; 
 
   if (scoreRows.length === 0) return { companies: 0, rows: 0 };
 
-  // Percentiles are ranked in SQL so the comparison always runs across the whole
-  // stored universe, not whatever happens to be loaded in memory. A sector with a
-  // single company has no peers to rank against, so it sits at the midpoint
-  // instead of PERCENT_RANK's 0.
-  await pool.query(
-    `WITH input AS (
-       SELECT * FROM unnest($2::uuid[], $3::text[], $4::numeric[], $5::numeric[], $6::text[])
-         AS t(company_id, component, raw_value, weight, direction)
-     ),
-     ranked AS (
-       SELECT i.*,
-              PERCENT_RANK() OVER (PARTITION BY c.sector, i.component ORDER BY i.raw_value) AS pct_rank,
-              COUNT(*) OVER (PARTITION BY c.sector, i.component) AS peers
-       FROM input i
-       JOIN companies c ON c.id = i.company_id
-     )
-     INSERT INTO scores (company_id, as_of, component, raw_value, percentile, weight)
-     SELECT company_id, $1::date, component, raw_value,
-            CASE WHEN peers = 1 THEN 0.5
-                 WHEN direction = 'lower' THEN 1 - pct_rank
-                 ELSE pct_rank END,
-            weight
-     FROM ranked
-     ON CONFLICT (company_id, as_of, component) DO UPDATE
-     SET raw_value = EXCLUDED.raw_value,
-         percentile = EXCLUDED.percentile,
-         weight = EXCLUDED.weight`,
-    [
-      asOf,
-      scoreRows.map((r) => r.companyId),
-      scoreRows.map((r) => r.component),
-      scoreRows.map((r) => r.rawValue.toString()),
-      scoreRows.map((r) => r.weight),
-      scoreRows.map((r) => DERIVED_METRICS[r.component]),
-    ]
-  );
+  // A rerun for the same date replaces that date's scores outright: a component
+  // a company no longer has must not survive from the earlier run. Delete and
+  // insert are one transaction, so a failed insert leaves the old rows intact.
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`DELETE FROM scores WHERE as_of = $1::date`, [asOf]);
+
+    // Percentiles are ranked in SQL so the comparison always runs across the whole
+    // stored universe, not whatever happens to be loaded in memory. A sector with a
+    // single company has no peers to rank against, so it sits at the midpoint
+    // instead of PERCENT_RANK's 0.
+    await client.query(
+      `WITH input AS (
+         SELECT * FROM unnest($2::uuid[], $3::text[], $4::numeric[], $5::numeric[], $6::text[])
+           AS t(company_id, component, raw_value, weight, direction)
+       ),
+       ranked AS (
+         SELECT i.*,
+                PERCENT_RANK() OVER (PARTITION BY c.sector, i.component ORDER BY i.raw_value) AS pct_rank,
+                COUNT(*) OVER (PARTITION BY c.sector, i.component) AS peers
+         FROM input i
+         JOIN companies c ON c.id = i.company_id
+       )
+       INSERT INTO scores (company_id, as_of, component, raw_value, percentile, weight)
+       SELECT company_id, $1::date, component, raw_value,
+              CASE WHEN peers = 1 THEN 0.5
+                   WHEN direction = 'lower' THEN 1 - pct_rank
+                   ELSE pct_rank END,
+              weight
+       FROM ranked
+       ON CONFLICT (company_id, as_of, component) DO UPDATE
+       SET raw_value = EXCLUDED.raw_value,
+           percentile = EXCLUDED.percentile,
+           weight = EXCLUDED.weight`,
+      [
+        asOf,
+        scoreRows.map((r) => r.companyId),
+        scoreRows.map((r) => r.component),
+        scoreRows.map((r) => r.rawValue.toString()),
+        scoreRows.map((r) => r.weight),
+        scoreRows.map((r) => DERIVED_METRICS[r.component]),
+      ]
+    );
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 
   return { companies: covered, rows: scoreRows.length };
 }
@@ -158,6 +174,9 @@ export interface ScoreComponent {
   percentile: number;
   weight: number;
   contribution: number;
+  // true for a weighted component the company has no data for: it is counted
+  // at the sector midpoint (0.5) rather than dropped, and is never evidence
+  imputed?: boolean;
 }
 
 export interface CompanyScore {
@@ -172,7 +191,10 @@ export interface CompanyScore {
 }
 
 // The total is recomputed from the stored component rows rather than stored
-// alongside them, so there is no second copy of a number to drift.
+// alongside them, so there is no second copy of a number to drift. Every
+// weighted component counts: one a company has no data for is passed in as an
+// imputed midpoint, so a company reporting a single strong figure cannot
+// outrank one that reports all of them by having its weight renormalised away.
 export function weightedTotal(components: ScoreComponent[]): number {
   const weightUsed = components.reduce((sum, c) => sum + c.weight, 0);
   if (weightUsed === 0) return 0;
@@ -180,6 +202,9 @@ export function weightedTotal(components: ScoreComponent[]): number {
   const weighted = components.reduce((sum, c) => sum + c.percentile * c.weight, 0);
   return (weighted / weightUsed) * 100;
 }
+
+// The sector midpoint: no better and no worse than the median peer.
+const IMPUTED_PERCENTILE = 0.5;
 
 export async function getScores(): Promise<CompanyScore[]> {
   const { rows } = await pool.query(
@@ -191,7 +216,8 @@ export async function getScores(): Promise<CompanyScore[]> {
      ORDER BY c.ticker, s.component`
   );
 
-  const expected = Object.keys(loadWeights()).length;
+  const weights = loadWeights();
+  const expected = Object.keys(weights).length;
   const byCompany = new Map<string, CompanyScore>();
 
   for (const row of rows) {
@@ -218,11 +244,22 @@ export async function getScores(): Promise<CompanyScore[]> {
 
   const scores = [...byCompany.values()];
   for (const score of scores) {
-    score.total = weightedTotal(score.components);
     score.coverage.present = score.components.length;
 
-    // Weights are renormalised over the components a company actually has, so
-    // contributions add up to the total even when some inputs are missing.
+    const present = new Set(score.components.map((c) => c.component));
+    for (const [component, weight] of Object.entries(weights)) {
+      if (present.has(component)) continue;
+      score.components.push({
+        component,
+        rawValue: null,
+        percentile: IMPUTED_PERCENTILE,
+        weight,
+        contribution: 0,
+        imputed: true,
+      });
+    }
+
+    score.total = weightedTotal(score.components);
     const weightUsed = score.components.reduce((sum, c) => sum + c.weight, 0);
     for (const component of score.components) {
       component.contribution =

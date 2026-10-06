@@ -43,9 +43,19 @@ const METRIC_TAGS: Record<string, string[]> = {
     "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
   ],
   shares_diluted: ["WeightedAverageNumberOfDilutedSharesOutstanding"],
+  // Shares in issue at the balance-sheet date. This, not the year's weighted
+  // average, is what a market capitalisation multiplies the price by.
+  shares_outstanding: ["CommonStockSharesOutstanding"],
 };
 
-const SHARE_METRICS = new Set(["shares_diluted"]);
+const SHARE_METRICS = new Set(["shares_diluted", "shares_outstanding"]);
+
+// The share count a market capitalisation should use: shares outstanding at
+// the period end, or the diluted weighted average when a filer does not report
+// a single undimensioned count (dual-class companies often report per class).
+export function capitalisationShares<T>(values: { get(metric: string): T | undefined }): T | undefined {
+  return values.get("shares_outstanding") ?? values.get("shares_diluted");
+}
 
 // The figures ingested straight from a filing, as opposed to the ones derived
 // from them in lib/metrics.

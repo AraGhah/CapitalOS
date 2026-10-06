@@ -39,10 +39,12 @@ export async function remember(input: {
   baselinePeriod: string | null;
   assumptions: RuleText[];
   invalidation: RuleText[];
+  // per assumption, the model that proposed it; falls back to modelId
+  assumptionAuthors?: Array<string | null>;
 }): Promise<number> {
   const rows = [
-    ...input.assumptions.map((r) => ({ ...r, kind: "assumption" })),
-    ...input.invalidation.map((r) => ({ ...r, kind: "invalidation" })),
+    ...input.assumptions.map((r, i) => ({ ...r, kind: "assumption", modelId: input.assumptionAuthors?.[i] ?? input.modelId })),
+    ...input.invalidation.map((r) => ({ ...r, kind: "invalidation", modelId: input.modelId })),
   ];
 
   for (const r of rows) {
@@ -53,7 +55,7 @@ export async function remember(input: {
       [
         input.companyId,
         input.runId,
-        input.modelId,
+        r.modelId,
         r.kind,
         r.text,
         r.metric,

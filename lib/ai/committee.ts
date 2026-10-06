@@ -1,4 +1,4 @@
-import { pool } from "../db";
+import { LOCKS, pool, withLock } from "../db";
 import { ACCOUNT_ID } from "../constants";
 import { resolveCompany } from "../resolve";
 import { addToWatchlist, type CompanyRow } from "../company";
@@ -44,6 +44,7 @@ import {
   type ChallengerView,
   type Disagreement,
   type JudgeView,
+  type RuleText,
   type Seat,
   type SynthesisView,
 } from "./roster";
@@ -333,8 +334,19 @@ async function refreshHeadlines(company: CompanyRow): Promise<string> {
 
 export async function runConsensus(
   opts: RunOptions,
-  emit: (event: RunEvent) => void = () => {}
+  listener: (event: RunEvent) => void = () => {}
 ): Promise<{ runId: string; cached: boolean }> {
+  // Progress reporting must never decide the outcome of a run: a listener that
+  // throws (a closed browser tab) would otherwise turn a paid, successful model
+  // call into a recorded failure.
+  const emit = (event: RunEvent) => {
+    try {
+      listener(event);
+    } catch {
+      // the listener has gone away; the run carries on
+    }
+  };
+
   const company = await resolveCompany(opts.ticker);
   await addToWatchlist(company.id, null);
   await reapStaleRuns();
@@ -347,8 +359,13 @@ export async function runConsensus(
   if (everyModel.length === 0) throw new NoCommitteeError();
 
   const chosen = opts.modelIds?.length ? everyModel.filter((m) => opts.modelIds!.includes(m.id)) : everyModel;
+  // Asking for particular models and silently getting others would bill models
+  // the person did not pick.
+  if (chosen.length === 0) {
+    throw new Error(`none of the requested models (${opts.modelIds?.join(", ")}) is configured`);
+  }
   const records = await stageRecords();
-  const analysts = seatAnalysts(chosen.length > 0 ? chosen : everyModel, records, spec.seats);
+  const analysts = seatAnalysts(chosen, records, spec.seats);
 
   const cast = castSeats(mode, analysts, everyModel, records);
   emit({
@@ -387,9 +404,12 @@ export async function runConsensus(
     }
   }
 
-  if ((await runsToday()) >= DAILY_RUN_BUDGET) throw new CommitteeBudgetError();
-
-  const runId = await createRun({ companyId: company.id, mode, focus, evidence: pack, cacheKey, models: analysts });
+  // Checked and claimed under one lock, so two runs started together cannot
+  // both see the last slot as free.
+  const runId = await withLock(LOCKS.committeeBudget, async () => {
+    if ((await runsToday()) >= DAILY_RUN_BUDGET) throw new CommitteeBudgetError();
+    return createRun({ companyId: company.id, mode, focus, evidence: pack, cacheKey, models: analysts });
+  });
   const ctx = new RunContext(runId, renderEvidence(pack), emit, opts.caller);
 
   try {
@@ -403,6 +423,7 @@ export async function runConsensus(
         modelId: report.synthesisBy?.modelId ?? null,
         baselinePeriod: pack.periodEnd,
         assumptions: report.synthesis.assumptions,
+        assumptionAuthors: report.assumptionAuthors,
         invalidation: report.synthesis.invalidation,
       });
     }
@@ -551,12 +572,19 @@ async function convene(ctx: RunContext, input: ConveneInput): Promise<ConsensusR
     ),
   ]);
 
+  // A reply that parsed as JSON but says nothing — no summary, no scored
+  // dimension, no claim — is a failed seat, not a vote of no opinion.
+  const substantive = <T extends { value: AnalystView | null; error: string | null }>(r: T): T => {
+    const v = r.value;
+    const empty = v !== null && !v.summary && !v.thesis && v.claims.length === 0 && Object.keys(v.dimensions).length === 0;
+    return empty ? { ...r, value: null, error: "the reply was valid JSON but contained no analysis" } : r;
+  };
   const analysts = cast.analysts.map((model, i) => ({
     letter: letter(i),
     model,
-    ...analystResults[i],
+    ...substantive(analystResults[i]),
   }));
-  const specialists = cast.specialists.map((s, i) => ({ ...s, ...specialistResults[i] }));
+  const specialists = cast.specialists.map((s, i) => ({ ...s, ...substantive(specialistResults[i]) }));
 
   const working = analysts.filter((a) => a.value !== null) as Array<(typeof analysts)[number] & { value: AnalystView }>;
   if (working.length === 0) {
@@ -813,6 +841,9 @@ async function convene(ctx: RunContext, input: ConveneInput): Promise<ConsensusR
     confidence,
     scorecards,
     adoptableRules: synthesis.invalidation.filter((r) => r.metric !== null),
+    assumptionAuthors: synthesis.assumptions.map(
+      (a) => proposerOf(a, working, specialists) ?? synthesisBy?.modelId ?? null
+    ),
     coverage: pack.coverage,
     cost: ctx.cost(),
     degraded,
@@ -1079,6 +1110,22 @@ function synthesisFigures(s: SynthesisView, pack: EvidencePack): string[] {
     ...s.catalysts,
   ].join("\n");
   return [...new Set(unsupportedFigures(prose, pack))];
+}
+
+// Which seat first proposed an assumption the conclusion kept: the same rule
+// (metric, operator, value) or, for a rule with no structure, the same words.
+// Analysts are searched before specialists, in seat order, so the earliest
+// proposer is credited. Null when no seat proposed it — the synthesizer wrote it.
+function proposerOf(rule: RuleText, working: Working[], specialists: Specialist[]): string | null {
+  const words = (t: string) => t.toLowerCase().replace(/\W+/g, " ").trim();
+  const same = (r: RuleText) =>
+    rule.metric !== null
+      ? r.metric === rule.metric && r.operator === rule.operator && r.value === rule.value
+      : words(r.text) !== "" && words(r.text) === words(rule.text);
+
+  for (const a of working) if (a.value.assumptions.some(same)) return a.model.id;
+  for (const s of specialists) if (s.value?.assumptions.some(same)) return s.model.id;
+  return null;
 }
 
 function dedupe<T>(items: T[], key: (item: T) => string): T[] {

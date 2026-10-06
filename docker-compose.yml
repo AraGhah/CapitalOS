@@ -4,9 +4,12 @@ services:
     environment:
       POSTGRES_DB: capitalos
       POSTGRES_USER: capitalos
-      POSTGRES_PASSWORD: capitalos
+      # Set POSTGRES_PASSWORD in your shell or a .env file next to this one; the
+      # fallback is only fit for a database nothing else on the network can reach.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-capitalos}
     ports:
-      - "5433:5432"
+      # loopback only: the ledger is not published to the rest of the network
+      - "127.0.0.1:5433:5432"
     volumes:
       - db-data:/var/lib/postgresql/data
 

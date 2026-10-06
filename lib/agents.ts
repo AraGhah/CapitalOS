@@ -114,17 +114,23 @@ export async function analyst(company: CompanyRow): Promise<AnalystResult> {
 async function tagWithModel(batch: HeadlineRow[]): Promise<Sentiment[]> {
   const listed = batch.map((h, i) => `${i}. ${h.title}`).join("\n");
 
-  const parsed = await completeJson<Array<{ i: number; s: string }>>({
+  const reply = await completeJson<unknown>({
     system: ANALYST_SYSTEM,
     messages: [{ role: "user", content: listed }],
     maxTokens: 2048,
   });
+  // The array is sometimes wrapped in an object ({"labels": [...]}); anything
+  // else leaves every headline neutral rather than failing the whole run.
+  const parsed: unknown[] = Array.isArray(reply)
+    ? reply
+    : (Object.values((reply ?? {}) as Record<string, unknown>).find(Array.isArray) as unknown[] | undefined) ?? [];
 
   // A model that skips or invents an index should not shift every other label,
   // so results are placed by index and anything missing stays neutral.
   const tags: Sentiment[] = batch.map(() => "neutral");
-  for (const item of parsed) {
-    if (!Number.isInteger(item.i) || item.i < 0 || item.i >= batch.length) continue;
+  for (const raw of parsed) {
+    const item = (raw ?? {}) as { i?: unknown; s?: unknown };
+    if (typeof item.i !== "number" || !Number.isInteger(item.i) || item.i < 0 || item.i >= batch.length) continue;
     if (item.s === "bullish" || item.s === "bearish" || item.s === "neutral") {
       tags[item.i] = item.s;
     }

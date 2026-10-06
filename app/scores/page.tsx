@@ -133,9 +133,12 @@ export default async function ScoresPage() {
                     </thead>
                     <tbody>
                       {s.components.map((c) => (
-                        <tr key={c.component}>
-                          <td className="wide">{label(c.component)}</td>
-                          <td className="num">{formatRaw(c.component, c.rawValue)}</td>
+                        <tr key={c.component} className={c.imputed ? "subtle" : undefined}>
+                          <td className="wide">
+                            {label(c.component)}
+                            {c.imputed && <span className="subtle"> · no data, counted at the sector midpoint</span>}
+                          </td>
+                          <td className="num">{c.imputed ? "—" : formatRaw(c.component, c.rawValue)}</td>
                           <td>
                             <Meter share={c.percentile} />
                           </td>

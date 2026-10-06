@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
-import { pool } from "./db";
+import { LOCKS, pool, withLock } from "./db";
+import { fetchWithRetry, readJson } from "./http";
 
 // The model client. Same shape as embeddings.ts: the hosted model is used when a
 // key is present, and its absence is reported rather than papered over with
 // something that only looks like model output.
 
-export const MODEL = process.env.ANTHROPIC_MODEL ?? "claude-opus-5";
+// The same default as the "claude-opus" entry in models.json, so the desk and
+// the committee use one model unless ANTHROPIC_MODEL says otherwise.
+export const MODEL = process.env.ANTHROPIC_MODEL?.trim() || "claude-opus-5-5";
 const API = "https://api.anthropic.com/v1/messages";
 const VERSION = "2023-06-01";
 
@@ -83,7 +86,7 @@ export async function complete(opts: CallOptions): Promise<Reply> {
 
   await takeSlot();
 
-  const res = await fetch(API, {
+  const res = await fetchWithRetry(API, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -100,10 +103,11 @@ export async function complete(opts: CallOptions): Promise<Reply> {
     signal: AbortSignal.timeout(120_000),
   });
 
-  const body = (await res.json()) as AnthropicResponse;
-  if (!res.ok) {
-    throw new Error(`model request failed: ${res.status} ${body.error?.message ?? ""}`.trim());
+  const body = await readJson<AnthropicResponse>(res);
+  if (!res.ok || !body) {
+    throw new Error(`model request failed: ${res.status} ${body?.error?.message ?? res.statusText}`.trim());
   }
+  if (!Array.isArray(body.content)) throw new Error("model request returned no content");
 
   return {
     text: body.content
@@ -164,6 +168,40 @@ export async function budgetRemaining(): Promise<number> {
     `SELECT count(*)::int AS spent FROM dossiers WHERE created_at >= date_trunc('day', now())`
   );
   return Math.max(0, DAILY_DOSSIER_BUDGET - rows[0].spent);
+}
+
+// A reservation outlives a strategist call comfortably; one older than this
+// belongs to a run that crashed before releasing it.
+const RESERVATION_MINUTES = 15;
+
+// Claims one slot of the day's dossier budget before the strategist is called,
+// counting finished dossiers and slots other runs hold but have not used yet.
+// Returns a release function, to be called once the dossier is saved (or the
+// run fails); throws BudgetExhaustedError when no slot is left.
+export async function reserveDossier(): Promise<() => Promise<void>> {
+  try {
+    const id = await withLock(LOCKS.dossierBudget, async () => {
+      const { rows } = await pool.query(
+        `SELECT (SELECT count(*) FROM dossiers WHERE created_at >= date_trunc('day', now()))::int
+              + (SELECT count(*) FROM budget_reservations
+                 WHERE kind = 'dossier' AND created_at > now() - make_interval(mins => $1))::int AS used`,
+        [RESERVATION_MINUTES]
+      );
+      if (rows[0].used >= DAILY_DOSSIER_BUDGET) throw new BudgetExhaustedError();
+      const { rows: made } = await pool.query(
+        `INSERT INTO budget_reservations (kind) VALUES ('dossier') RETURNING id`
+      );
+      return made[0].id as string;
+    });
+    return async () => {
+      await pool.query(`DELETE FROM budget_reservations WHERE id = $1`, [id]).catch(() => undefined);
+    };
+  } catch (err) {
+    if (err instanceof BudgetExhaustedError) throw err;
+    // No reservations table (hardening migration not run): the plain check.
+    if ((await budgetRemaining()) <= 0) throw new BudgetExhaustedError();
+    return async () => {};
+  }
 }
 
 export class BudgetExhaustedError extends Error {

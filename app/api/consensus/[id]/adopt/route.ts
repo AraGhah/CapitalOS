@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { getCompanyForRun, getRun } from "@/lib/ai/store";
-import { openThesis, parseRules } from "@/lib/theses";
+import { findOpenThesis, openThesis, parseRules } from "@/lib/theses";
 import { addJournal } from "@/lib/ai/journal";
 
 export const dynamic = "force-dynamic";
@@ -11,8 +11,11 @@ export const dynamic = "force-dynamic";
 export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   const run = await getRun(id);
+  if (!run || run.summary.status !== "done" || !run.report) {
+    return Response.json({ error: "no finished run with that id" }, { status: 404 });
+  }
   const company = await getCompanyForRun(id);
-  if (!run?.report || !company) return Response.json({ error: "no finished run with that id" }, { status: 404 });
+  if (!company) return Response.json({ error: "no finished run with that id" }, { status: 404 });
 
   const rules = run.report.adoptableRules.map((r) => ({ metric: r.metric, operator: r.operator, value: r.value }));
   let parsed;
@@ -23,6 +26,11 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       { error: `this committee left no rule a filing can check: ${(err as Error).message}` },
       { status: 422 }
     );
+  }
+
+  const existing = await findOpenThesis(company.companyId, parsed);
+  if (existing) {
+    return Response.json({ thesisId: existing, rules: parsed, alreadyOpen: true }, { status: 200 });
   }
 
   const rationale = run.report.synthesis?.thesis || run.report.synthesis?.headline || null;

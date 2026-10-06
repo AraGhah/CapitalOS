@@ -1,4 +1,5 @@
 import { takeSlot } from "../llm";
+import { fetchWithRetry, readJson } from "../http";
 import { costOf, type ModelSpec } from "./models";
 
 /* ---------------------------------------------------------------------------
@@ -87,7 +88,7 @@ async function callAnthropic(
   apiKey: string,
   req: ModelRequest
 ): Promise<Omit<ModelResult, "latencyMs" | "costUsd">> {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const res = await fetchWithRetry("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -106,9 +107,9 @@ async function callAnthropic(
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
 
-  const body = (await res.json()) as AnthropicBody;
-  if (!res.ok) {
-    throw new Error(`${spec.label} request failed: ${res.status} ${body.error?.message ?? ""}`.trim());
+  const body = await readJson<AnthropicBody>(res);
+  if (!res.ok || !body) {
+    throw new Error(`${spec.label} request failed: ${res.status} ${body?.error?.message ?? res.statusText}`.trim());
   }
 
   return {
@@ -155,17 +156,17 @@ async function callOpenAiCompatible(
   };
   if (config.jsonMode) payload.response_format = { type: "json_object" };
 
-  const res = await fetch(`${base}/chat/completions`, {
+  const res = await fetchWithRetry(`${base}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
 
-  const body = (await res.json()) as ChatBody;
-  if (!res.ok) {
-    const message = typeof body.error === "string" ? body.error : body.error?.message;
-    throw new Error(`${spec.label} request failed: ${res.status} ${message ?? ""}`.trim());
+  const body = await readJson<ChatBody>(res);
+  if (!res.ok || !body) {
+    const message = typeof body?.error === "string" ? body.error : body?.error?.message;
+    throw new Error(`${spec.label} request failed: ${res.status} ${message ?? res.statusText}`.trim());
   }
 
   const cached = body.usage?.prompt_tokens_details?.cached_tokens ?? 0;

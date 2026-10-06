@@ -1,5 +1,5 @@
 import { pool } from "./db";
-import { getSource, getSourceText, type SourceRow } from "./sources";
+import { getSource, getSourceText, sourceBelongsTo, type SourceRow } from "./sources";
 
 export const RESEARCH_FIELDS = ["outlook", "catalysts", "risks", "bull_case", "bear_case"] as const;
 export type ResearchField = (typeof RESEARCH_FIELDS)[number];
@@ -83,6 +83,10 @@ export async function addClaims(
       const source = await getSource(sourceId);
       if (!source) {
         rejected.push({ index, reason: `no source stored with id ${sourceId}` });
+        continue;
+      }
+      if (!(await sourceBelongsTo(source, companyId))) {
+        rejected.push({ index, reason: `source ${sourceId} is not a filing or headline of this company` });
         continue;
       }
       try {

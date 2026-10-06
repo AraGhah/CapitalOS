@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { isUuid } from "@/lib/ids";
 import { PaperError, paperPortfolio, placeOrder } from "@/lib/paper";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +16,7 @@ export async function POST(req: NextRequest) {
 
   const dollars = typeof body.dollars === "number" ? body.dollars : undefined;
   const qty = typeof body.qty === "number" ? body.qty : undefined;
-  const runId = typeof body.runId === "string" && /^[0-9a-f-]{36}$/i.test(body.runId) ? body.runId : null;
+  const runId = isUuid(body.runId) ? body.runId : null;
 
   try {
     const trade = await placeOrder({

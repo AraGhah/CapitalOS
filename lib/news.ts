@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { pool } from "./db";
 import { cosineSim, embed } from "./embeddings";
+import { isWebUrl } from "./url";
 
 export interface Article {
   url: string;
@@ -17,10 +18,20 @@ const GDELT_INTERVAL_MS = 6000;
 const MAX_ATTEMPTS = 4;
 const BACKOFF_MS = 8000;
 
-let lastRequestAt = 0;
+const TIMEOUT_MS = 20_000;
 
-function sleep(ms: number) {
+function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// One GDELT request at a time, each starting at least GDELT_INTERVAL_MS after
+// the last. Callers queue on a chain; reading a shared timestamp instead let
+// concurrent callers all decide it was their turn at once.
+let gate: Promise<void> = Promise.resolve();
+function takeTurn(): Promise<void> {
+  const turn = gate.then(() => sleep(GDELT_INTERVAL_MS));
+  gate = turn;
+  return turn;
 }
 
 function isThrottleNotice(body: string): boolean {
@@ -31,13 +42,12 @@ async function gdeltRequest(url: string): Promise<string> {
   let lastProblem = "no response";
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const wait = GDELT_INTERVAL_MS - (Date.now() - lastRequestAt);
-    if (wait > 0) await sleep(wait);
-    lastRequestAt = Date.now();
+    await takeTurn();
 
     try {
       const res = await fetch(url, {
         headers: { "User-Agent": process.env.SEC_USER_AGENT ?? "CapitalOS contact@example.com" },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
       });
       const body = await res.text();
 
@@ -97,7 +107,7 @@ export async function fetchArticles(
   }
 
   return (parsed.articles ?? [])
-    .filter((a) => a.url && a.title)
+    .filter((a) => a.url && a.title && isWebUrl(a.url))
     .map((a) => ({
       url: a.url,
       title: a.title.trim(),
