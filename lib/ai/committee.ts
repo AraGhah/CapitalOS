@@ -1,5 +1,7 @@
 import { LOCKS, pool, withLock } from "../db";
-import { ACCOUNT_ID } from "../constants";
+import type { Actor } from "../actor";
+import { config } from "../config";
+import { errorFields, log } from "../log";
 import { resolveCompany } from "../resolve";
 import { addToWatchlist, type CompanyRow } from "../company";
 import { scout } from "../agents";
@@ -64,6 +66,7 @@ import {
   type EvaluationRow,
 } from "./store";
 import { remember } from "./memory";
+import { assertWithinSpend } from "./metering";
 import { addJournal } from "./journal";
 
 /* ---------------------------------------------------------------------------
@@ -85,11 +88,10 @@ export class NoCommitteeError extends Error {
   }
 }
 
-const DAILY_RUN_BUDGET = Number(process.env.DAILY_CONSENSUS_BUDGET ?? 12);
-
 export class CommitteeBudgetError extends Error {
+  readonly status = 429;
   constructor() {
-    super(`the daily budget of ${DAILY_RUN_BUDGET} committee runs is used up (DAILY_CONSENSUS_BUDGET)`);
+    super(`the daily budget of ${config().DAILY_CONSENSUS_BUDGET} committee runs is used up (DAILY_CONSENSUS_BUDGET)`);
     this.name = "CommitteeBudgetError";
   }
 }
@@ -111,6 +113,7 @@ export type RunEvent =
   | { type: "error"; message: string };
 
 export interface RunOptions {
+  actor: Pick<Actor, "userId" | "accountId">;
   ticker: string;
   mode: Mode | "auto";
   focus?: string | null;
@@ -138,6 +141,7 @@ class RunContext {
 
   constructor(
     readonly runId: string,
+    readonly userId: string,
     readonly evidence: string,
     readonly emit: (event: RunEvent) => void,
     private readonly caller: typeof callModel = callModel
@@ -160,6 +164,9 @@ class RunContext {
     for (let attempt = 0; attempt < 2; attempt++) {
       let text: string | null = null;
       try {
+        // The day's dollar limit is checked before every call, so a long
+        // committee stops spending the moment it is reached.
+        await assertWithinSpend(this.userId);
         const result = await this.caller(input.spec, {
           evidence: this.evidence,
           instructions: input.instructions,
@@ -175,6 +182,7 @@ class RunContext {
         } catch (err) {
           const callId = await recordCall({
             runId: this.runId,
+            userId: this.userId,
             stage: input.stage,
             agent: input.agent,
             spec: input.spec,
@@ -195,6 +203,7 @@ class RunContext {
         const value = input.normalize(raw);
         const callId = await recordCall({
           runId: this.runId,
+          userId: this.userId,
           stage: input.stage,
           agent: input.agent,
           spec: input.spec,
@@ -207,10 +216,13 @@ class RunContext {
         return { value, callId, error: null };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        this.calls++;
+        // A call that never returned was never metered; one that returned and
+        // then failed later (normalising, recording) already was.
+        if (text === null) this.calls++;
         this.failed++;
         const callId = await recordCall({
           runId: this.runId,
+          userId: this.userId,
           stage: input.stage,
           agent: input.agent,
           spec: input.spec,
@@ -226,16 +238,14 @@ class RunContext {
     return { value: null, callId: null, error: "no reply" };
   }
 
-  private meter(result: { inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number | null }) {
+  private meter(result: { inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; costEstimated: boolean }) {
     this.calls++;
     this.inputTokens += result.inputTokens;
     this.outputTokens += result.outputTokens;
     this.cachedTokens += result.cachedTokens;
-    if (result.costUsd === null) this.unpriced++;
-    else {
-      this.priced++;
-      this.costUsd += result.costUsd;
-    }
+    this.costUsd += result.costUsd;
+    if (result.costEstimated) this.unpriced++;
+    else this.priced++;
   }
 
   private callEvent(
@@ -255,7 +265,7 @@ class RunContext {
       inputTokens: this.inputTokens,
       outputTokens: this.outputTokens,
       cachedTokens: this.cachedTokens,
-      costUsd: this.priced > 0 ? this.costUsd : null,
+      costUsd: this.costUsd,
       unpriced: this.unpriced,
       seconds: Math.round((Date.now() - this.started) / 1000),
     };
@@ -297,13 +307,13 @@ function standing(c: ClaimEntry): boolean {
 
 /* ------------------------------------------------------------------- mode */
 
-async function autoMode(company: CompanyRow): Promise<Mode> {
+async function autoMode(actor: RunOptions["actor"], company: CompanyRow): Promise<Mode> {
   // A held position or an open thesis is a decision already made with money or
   // conviction behind it, so it gets the deeper look.
   const { rows } = await pool.query(
-    `SELECT EXISTS (SELECT 1 FROM transactions WHERE company_id = $1 AND account_id = $2) AS held,
-            EXISTS (SELECT 1 FROM theses WHERE company_id = $1 AND status = 'open') AS thesis`,
-    [company.id, ACCOUNT_ID]
+    `SELECT EXISTS (SELECT 1 FROM transactions WHERE company_id = $1 AND account_id = $2 AND voided_at IS NULL) AS held,
+            EXISTS (SELECT 1 FROM theses WHERE company_id = $1 AND user_id = $3 AND status = 'open') AS thesis`,
+    [company.id, actor.accountId, actor.userId]
   );
   return rows[0].held || rows[0].thesis ? "deep" : "standard";
 }
@@ -347,16 +357,18 @@ export async function runConsensus(
     }
   };
 
+  const { actor } = opts;
   const company = await resolveCompany(opts.ticker);
-  await addToWatchlist(company.id, null);
+  await addToWatchlist(actor.userId, company.id, null);
   await reapStaleRuns();
 
-  const mode = opts.mode === "auto" ? await autoMode(company) : opts.mode;
+  const mode = opts.mode === "auto" ? await autoMode(actor, company) : opts.mode;
   const spec = modeSpec(mode);
   const focus = opts.focus?.trim() || null;
 
   const everyModel = availableModels();
   if (everyModel.length === 0) throw new NoCommitteeError();
+  await assertWithinSpend(actor.userId);
 
   const chosen = opts.modelIds?.length ? everyModel.filter((m) => opts.modelIds!.includes(m.id)) : everyModel;
   // Asking for particular models and silently getting others would bill models
@@ -381,7 +393,7 @@ export async function runConsensus(
 
   emit({ type: "phase", phase: "evidence", status: "running" });
   const newsNote = await refreshHeadlines(company);
-  const pack = await buildEvidence(company);
+  const pack = await buildEvidence(company, actor);
   emit({
     type: "phase",
     phase: "evidence",
@@ -397,7 +409,7 @@ export async function runConsensus(
   });
 
   if (!opts.force) {
-    const cached = await findCachedRun(cacheKey);
+    const cached = await findCachedRun(actor.userId, cacheKey);
     if (cached) {
       emit({ type: "cached", runId: cached });
       return { runId: cached, cached: true };
@@ -406,18 +418,27 @@ export async function runConsensus(
 
   // Checked and claimed under one lock, so two runs started together cannot
   // both see the last slot as free.
-  const runId = await withLock(LOCKS.committeeBudget, async () => {
-    if ((await runsToday()) >= DAILY_RUN_BUDGET) throw new CommitteeBudgetError();
-    return createRun({ companyId: company.id, mode, focus, evidence: pack, cacheKey, models: analysts });
+  const runId = await withLock(LOCKS.committeeBudget(actor.userId), async (client) => {
+    if ((await runsToday(actor.userId, client)) >= config().DAILY_CONSENSUS_BUDGET) throw new CommitteeBudgetError();
+    return createRun({ userId: actor.userId, companyId: company.id, mode, focus, evidence: pack, cacheKey, models: analysts }, client);
   });
-  const ctx = new RunContext(runId, renderEvidence(pack), emit, opts.caller);
+  const ctx = new RunContext(runId, actor.userId, renderEvidence(pack), emit, opts.caller);
 
+  let report: ConsensusReport;
   try {
-    const report = await convene(ctx, { company, pack, mode, focus, cast });
+    report = await convene(ctx, { company, pack, mode, focus, cast });
     await finishRun(runId, report);
+  } catch (err) {
+    await failRun(runId, err instanceof Error ? err.message : String(err));
+    throw err;
+  }
 
+  // The run is finished and paid for. What follows is bookkeeping about it: a
+  // failure here is logged, and never turns a finished run into a failed one.
+  try {
     if (report.synthesis) {
       await remember({
+        userId: actor.userId,
         companyId: company.id,
         runId,
         modelId: report.synthesisBy?.modelId ?? null,
@@ -428,19 +449,19 @@ export async function runConsensus(
       });
     }
     await addJournal({
+      userId: actor.userId,
       companyId: company.id,
       kind: "committee",
       title: `${spec.label} on ${company.ticker}: ${report.synthesis?.headline || "no conclusion written"}`,
       detail: `Confidence ${report.confidence.label} (${Math.round(report.confidence.score * 100)}). ${report.cost.calls} model calls across ${report.analysts.length} analyst seats.${focus ? ` Question: ${focus}` : ""}`,
       refId: runId,
     });
-
-    emit({ type: "done", runId });
-    return { runId, cached: false };
   } catch (err) {
-    await failRun(runId, err instanceof Error ? err.message : String(err));
-    throw err;
+    log.warn({ runId, ...errorFields(err) }, "committee finished but its memory or journal entry was not written");
   }
+
+  emit({ type: "done", runId });
+  return { runId, cached: false };
 }
 
 /* --------------------------------------------------------------- casting */

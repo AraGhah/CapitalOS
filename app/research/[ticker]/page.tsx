@@ -1,3 +1,4 @@
+import { requirePageActor } from "@/lib/auth/current";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { findCompany, getFilings, getPriceHistory } from "@/lib/company";
@@ -34,6 +35,7 @@ function label(component: string): string {
 
 export default async function ResearchPage({ params }: PageProps<"/research/[ticker]">) {
   const { ticker } = await params;
+  const { actor } = await requirePageActor();
 
   // Viewing a page never writes. A real symbol the desk has not seen gets an
   // offer to add it; a symbol nothing recognises is a 404.
@@ -58,13 +60,13 @@ export default async function ResearchPage({ params }: PageProps<"/research/[tic
   }
 
   const [note, headlines, dossier, bars, filings, scores, committees] = await Promise.all([
-    getResearchNote(company.id, company.ticker, company.name),
+    getResearchNote(actor.userId, company.id, company.ticker, company.name),
     getHeadlines(company.id, 80),
     getLatestDossier(company.id),
     getPriceHistory(company.id, { limit: PRICE_BARS }),
     getFilings(company.id, { limit: 6 }),
     getScores(),
-    listRuns({ companyId: company.id, limit: 3 }),
+    listRuns(actor.userId, { companyId: company.id, limit: 3 }),
   ]);
   const lastCommittee = committees.find((r) => r.status === "done") ?? null;
 
@@ -72,7 +74,7 @@ export default async function ResearchPage({ params }: PageProps<"/research/[tic
   const missingInputs = coverage.inputs.filter((i) => !i.present);
   const score = scores.find((s) => s.companyId === company.id) ?? null;
 
-  // Stored bars, used only if Yahoo cannot be reached when the card mounts.
+  // Stored bars, used only if the provider cannot be reached when the card mounts.
   const storedBars: PricePoint[] = bars.map((b) => {
     const low = b.low === null ? null : Number(b.low);
     const high = b.high === null ? null : Number(b.high);

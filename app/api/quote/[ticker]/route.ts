@@ -1,24 +1,18 @@
-import type { NextRequest } from "next/server";
+import { route } from "@/lib/http/route";
+import { HttpError, parseWith } from "@/lib/http/errors";
+import { QuoteRange, Ticker } from "@/lib/http/schemas";
 import { fetchChart } from "@/lib/quote";
 
 export const dynamic = "force-dynamic";
 
-// The price card asks for this directly, so a Yahoo outage costs the card and
-// nothing else on the page.
-export async function GET(req: NextRequest, ctx: { params: Promise<{ ticker: string }> }) {
-  const { ticker } = await ctx.params;
-  const asked = new URL(req.url).searchParams.get("range") ?? "1mo";
-  // Only the ranges the price card offers; anything else is the default.
-  const range = ["5d", "1mo", "3mo", "6mo", "1y", "2y", "5y"].includes(asked) ? asked : "1mo";
-
+// The price card asks for this directly, so a market-data outage costs the
+// card and nothing else on the page.
+export const GET = route<{ ticker: string }>(async (req, { params }) => {
+  const ticker = parseWith(Ticker, params.ticker);
+  const range = QuoteRange.parse(req.nextUrl.searchParams.get("range") ?? "1mo");
   try {
-    return Response.json(await fetchChart(ticker, range), {
-      headers: { "Cache-Control": "no-store" },
-    });
-  } catch (err) {
-    return Response.json(
-      { error: err instanceof Error ? err.message : "quote unavailable" },
-      { status: 502 }
-    );
+    return Response.json(await fetchChart(ticker, range), { headers: { "Cache-Control": "no-store" } });
+  } catch {
+    throw new HttpError(502, `no quote for ${ticker} right now`, "upstream_unavailable");
   }
-}
+});

@@ -1,5 +1,6 @@
 import Decimal from "decimal.js";
-import { LOCKS, pool, withLock } from "./db";
+import { LOCKS, pool, withLock, type Db } from "./db";
+import { config } from "./config";
 import { getSplits, splitFactor } from "./splits";
 import { resolveCompany } from "./resolve";
 import { fetchChart } from "./quote";
@@ -16,9 +17,9 @@ import { addJournal } from "./ai/journal";
    hypothesis gets a running score.
 --------------------------------------------------------------------------- */
 
-export const STARTING_CAPITAL = Number(process.env.PAPER_STARTING_CAPITAL ?? 100_000);
-// A flat commission per trade, so a strategy that trades constantly pays for it.
-const FEE = 1;
+export function startingCapital(): number {
+  return config().PAPER_STARTING_CAPITAL;
+}
 
 export class PaperError extends Error {
   constructor(message: string) {
@@ -50,8 +51,8 @@ interface TradeRow {
 // quantity and price (never the dollars), the same way the real ledger is read.
 // A trade whose SPY price was not caught when it was placed falls back to SPY's
 // stored close on that day, so one failed quote does not void the benchmark.
-async function trades(): Promise<TradeRow[]> {
-  const { rows } = await pool.query(
+async function trades(userId: string, db: Db = pool): Promise<TradeRow[]> {
+  const { rows } = await db.query(
     `SELECT p.id, p.created_at, p.company_id, c.ticker, p.side, p.qty, p.price, p.fees, p.spy_price, p.run_id, p.rationale,
             COALESCE(p.spy_price, (
               SELECT pd.close FROM prices_daily pd JOIN companies s ON s.id = pd.company_id
@@ -59,9 +60,11 @@ async function trades(): Promise<TradeRow[]> {
               ORDER BY pd.date DESC LIMIT 1
             )) AS spy_basis
      FROM paper_trades p JOIN companies c ON c.id = p.company_id
-     ORDER BY p.created_at, p.id`
+     WHERE p.user_id = $1
+     ORDER BY p.created_at, p.id`,
+    [userId]
   );
-  const splits = await getSplits([...new Set(rows.map((r) => r.company_id as string))]);
+  const splits = await getSplits([...new Set(rows.map((r) => r.company_id as string))], db);
 
   return rows.map((r) => {
     const createdAt = (r.created_at as Date).toISOString();
@@ -85,10 +88,11 @@ function cashAfter(list: TradeRow[]): Decimal {
   return list.reduce((cash, t) => {
     const gross = new Decimal(t.qty).mul(t.price);
     return t.side === "buy" ? cash.sub(gross).sub(t.fees) : cash.add(gross).sub(t.fees);
-  }, new Decimal(STARTING_CAPITAL));
+  }, new Decimal(startingCapital()));
 }
 
 export async function placeOrder(input: {
+  userId: string;
   ticker: string;
   side: "buy" | "sell";
   dollars?: number;
@@ -103,19 +107,22 @@ export async function placeOrder(input: {
   if (!Number.isFinite(qty) || qty <= 0) throw new PaperError("an order needs a positive quantity or dollar amount");
   qty = Math.floor(qty * 1e6) / 1e6;
 
-  // The cash and holdings check and the insert happen under one lock, so two
-  // orders placed together cannot both spend the same paper cash.
-  return withLock(LOCKS.paperOrders, () => fill(company, input, qty, price, spy));
+  // The cash and holdings check and the insert happen under one lock, on the
+  // locked connection, so two orders placed together cannot both spend the
+  // same paper cash.
+  return withLock(LOCKS.paperOrders(input.userId), (client) => fill(client, company, input, qty, price, spy));
 }
 
 async function fill(
+  client: Db,
   company: { id: string; ticker: string },
-  input: { side: "buy" | "sell"; runId?: string | null; rationale?: string | null },
+  input: { userId: string; side: "buy" | "sell"; runId?: string | null; rationale?: string | null },
   qty: number,
   price: number,
   spy: number | null
 ): Promise<TradeRow> {
-  const history = await trades();
+  const FEE = config().PAPER_COMMISSION_USD;
+  const history = await trades(input.userId, client);
   if (input.side === "buy") {
     const cash = cashAfter(history);
     const cost = new Decimal(qty).mul(price).add(FEE);
@@ -127,19 +134,23 @@ async function fill(
     if (qty > held + 1e-9) throw new PaperError(`only ${held} ${company.ticker} is held on paper`);
   }
 
-  const { rows } = await pool.query(
-    `INSERT INTO paper_trades (company_id, side, qty, price, fees, spy_price, run_id, rationale)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, created_at`,
-    [company.id, input.side, qty, price, FEE, spy, input.runId ?? null, input.rationale?.slice(0, 500) ?? null]
+  const { rows } = await client.query(
+    `INSERT INTO paper_trades (user_id, company_id, side, qty, price, fees, spy_price, run_id, rationale)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at`,
+    [input.userId, company.id, input.side, qty, price, FEE, spy, input.runId ?? null, input.rationale?.slice(0, 500) ?? null]
   );
 
-  await addJournal({
+  await addJournal(
+    {
+    userId: input.userId,
     companyId: company.id,
     kind: "paper-trade",
     title: `Paper ${input.side} ${qty} ${company.ticker} at ${price.toFixed(2)}`,
     detail: input.rationale ?? null,
     refId: input.runId ?? rows[0].id,
-  });
+    },
+    client
+  );
 
   return {
     id: rows[0].id,
@@ -191,8 +202,9 @@ export interface PaperPortfolio {
   priceErrors: string[];
 }
 
-export async function paperPortfolio(): Promise<PaperPortfolio> {
-  const list = await trades();
+export async function paperPortfolio(userId: string): Promise<PaperPortfolio> {
+  const STARTING_CAPITAL = startingCapital();
+  const list = await trades(userId);
   const tickers = [...new Set(list.map((t) => t.ticker))];
   const priceErrors: string[] = [];
   const prices = new Map<string, number>();

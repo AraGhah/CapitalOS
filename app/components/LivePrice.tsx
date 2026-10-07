@@ -12,8 +12,8 @@ interface Chart {
   bars: Array<{ date: string; open: number | null; high: number | null; low: number | null; close: number | null }>;
 }
 
-// The price card asks Yahoo directly on mount, so it is current rather than as old
-// as the last ingest run. If Yahoo is unreachable the card says so and the stored
+// The price card asks the market-data provider on mount, so it is current rather than as old
+// as the last ingest run. If the provider is unreachable the card says so and the stored
 // bars passed in as a fallback are shown instead.
 export function LivePrice({ ticker, fallback }: { ticker: string; fallback: PricePoint[] }) {
   const [chart, setChart] = useState<Chart | null>(null);
@@ -50,7 +50,7 @@ export function LivePrice({ ticker, fallback }: { ticker: string; fallback: Pric
     : fallback;
 
   // The day's move, live or from the last two stored closes — the same measure
-  // either way, so the pill does not change meaning when Yahoo is down.
+  // either way, so the pill does not change meaning when the provider is down.
   const closes = points.map((p) => p.close).filter((c): c is number => c !== null);
   const lastClose = closes.at(-1) ?? null;
   const priorClose = closes.at(-2) ?? null;
@@ -64,7 +64,7 @@ export function LivePrice({ ticker, fallback }: { ticker: string; fallback: Pric
         <h2>Price</h2>
         <span className="hint">
           {chart
-            ? "Yahoo Finance, one month"
+            ? "live quote, one month"
             : error
               ? "live quote unavailable — showing stored bars"
               : "loading…"}

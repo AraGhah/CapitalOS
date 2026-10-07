@@ -1,18 +1,13 @@
-import type { NextRequest } from "next/server";
-import { CycleBusyError, runCycle } from "@/lib/autopilot/cycle";
+import { route } from "@/lib/http/route";
+import { parseJson } from "@/lib/http/errors";
+import { AutopilotRun } from "@/lib/http/schemas";
+import { startJob } from "@/lib/jobs/start";
 
 export const dynamic = "force-dynamic";
-// A pass that convenes committees can take several minutes.
-export const maxDuration = 800;
 
-// One pass of the loop on demand, the same one `npm run autopilot` runs on a
-// schedule. Convening is off unless the request asks for it.
-export async function POST(req: NextRequest) {
-  const body = (await req.json().catch(() => ({}))) as { convene?: boolean };
-  try {
-    return Response.json(await runCycle({ convene: body.convene === true }));
-  } catch (err) {
-    if (err instanceof CycleBusyError) return Response.json({ error: err.message }, { status: 409 });
-    return Response.json({ error: err instanceof Error ? err.message : "the pass failed" }, { status: 500 });
-  }
-}
+// One pass of the loop on demand, the same one the scheduler enqueues. It runs
+// in the worker; convening committees is off unless the request asks for it.
+export const POST = route(async (req, { actor }) => {
+  const body = await parseJson(req, AutopilotRun);
+  return startJob(actor, "autopilot", { convene: body.convene === true }, { dedupeKey: "autopilot" });
+});

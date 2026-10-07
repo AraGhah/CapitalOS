@@ -166,7 +166,7 @@ export default async function MarketsPage() {
                 performance, the VIX level, credit, breadth across the eleven sectors, the Fed funds path and the yield
                 curve. The regime is risk-on or risk-off when one side leads by two signals or more.
               </p>
-              <p>ETFs stand in for what they track. Prices are Yahoo daily closes; macro is FRED.</p>
+              <p>ETFs stand in for what they track. Prices are daily closes from the configured market-data provider; macro is FRED.</p>
             </div>
           </section>
         </div>

@@ -1,3 +1,4 @@
+import { requirePageActor } from "@/lib/auth/current";
 import Link from "next/link";
 import { listAlerts, recentCycles, type AlertRow } from "@/lib/autopilot/cycle";
 import { availableModels } from "@/lib/ai/models";
@@ -11,10 +12,11 @@ const TONE: Record<string, string> = { high: "bad", warn: "warn", info: "info" }
 const LOOP = ["Discover", "Research", "Debate", "Verify", "Synthesize", "Track", "Monitor", "Learn"];
 
 export default async function AlertsPage() {
+  const { actor } = await requirePageActor();
   const [open, reviewed, cycles] = await Promise.all([
-    listAlerts({ status: "new", limit: 100 }),
-    listAlerts({ status: "seen", limit: 30 }),
-    recentCycles(8),
+    listAlerts(actor.userId, { status: "new", limit: 100 }),
+    listAlerts(actor.userId, { status: "seen", limit: 30 }),
+    recentCycles(actor.userId, 8),
   ]);
   const last = cycles[0];
 

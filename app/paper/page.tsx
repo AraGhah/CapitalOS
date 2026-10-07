@@ -1,3 +1,4 @@
+import { requirePageActor } from "@/lib/auth/current";
 import Link from "next/link";
 import { paperPortfolio } from "@/lib/paper";
 import { money } from "@/lib/format";
@@ -11,9 +12,10 @@ function pct(x: number | null, digits = 2): string {
 }
 
 export default async function PaperPage() {
+  const { actor } = await requirePageActor();
   let portfolio;
   try {
-    portfolio = await paperPortfolio();
+    portfolio = await paperPortfolio(actor.userId);
   } catch {
     return (
       <div>

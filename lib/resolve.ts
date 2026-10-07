@@ -6,7 +6,7 @@ import { findCompany, type CompanyRow } from "./company";
 
 // Researching a ticker the desk has never seen has to create its companies row
 // first. A symbol is only accepted if something real recognises it — SEC's own
-// ticker file, or failing that Yahoo, which also covers ETFs and foreign listings
+// ticker file, or failing that the market-data provider, which also covers ETFs
 // that never file with the SEC. A typo matches neither and is refused, so the
 // table does not fill up with rows for tickers that do not exist.
 
@@ -45,26 +45,30 @@ export interface TickerLookup {
   ticker: string;
   name: string;
   cik: string | null;
+  currency: string;
 }
 
 // Whether a symbol is real, and what it is called — without writing anything.
-// SEC's ticker file first, Yahoo for funds and foreign listings.
+// SEC's ticker file first, the market-data provider for funds.
 export async function lookupTicker(rawTicker: string): Promise<TickerLookup | null> {
   const ticker = rawTicker.trim().toUpperCase();
   if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(ticker)) return null;
 
   try {
     const entry = (await loadTickerMap()).get(ticker);
-    if (entry) return { ticker, name: entry.title, cik: padCik(entry.cik_str) };
+    // SEC filers list in US dollars.
+    if (entry) return { ticker, name: entry.title, cik: padCik(entry.cik_str), currency: "USD" };
   } catch {
-    // SEC unreachable — Yahoo below is the remaining way to confirm the symbol.
+    // SEC unreachable — the provider below is the remaining way to confirm the symbol.
   }
 
   try {
     const chart = await fetchChart(ticker, "5d");
-    if (chart.bars.length > 0 || chart.price !== null) return { ticker, name: ticker, cik: null };
+    if (chart.bars.length > 0 || chart.price !== null) {
+      return { ticker, name: ticker, cik: null, currency: /^[A-Z]{3}$/.test(chart.currency ?? "") ? (chart.currency as string) : "USD" };
+    }
   } catch {
-    // not a symbol Yahoo knows either
+    // not a symbol the provider knows either
   }
   return null;
 }
@@ -83,9 +87,9 @@ export async function resolveCompany(rawTicker: string): Promise<CompanyRow> {
   if (!found) throw new UnknownTickerError(ticker);
 
   await pool.query(
-    `INSERT INTO companies (ticker, name, cik) VALUES ($1, $2, $3)
+    `INSERT INTO companies (ticker, name, cik, currency) VALUES ($1, $2, $3, $4)
      ON CONFLICT (ticker) DO UPDATE SET name = EXCLUDED.name`,
-    [found.ticker, found.name, found.cik]
+    [found.ticker, found.name, found.cik, found.currency]
   );
 
   const created = await findCompany(ticker);

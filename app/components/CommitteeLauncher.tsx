@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { MODES, modeSpec, plannedCalls, type Mode } from "@/lib/ai/modes";
+import { startAndFollow } from "@/app/components/jobs";
 
 interface ModelOption {
   id: string;
@@ -74,28 +75,17 @@ export function CommitteeLauncher({
     setError(null);
 
     try {
-      const res = await fetch("/api/consensus", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticker: ticker.trim(), mode, focus, modelIds: selected, force }),
-      });
-      if (!res.ok || !res.body) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `the desk refused the run (${res.status})`);
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) if (line.trim()) handle(JSON.parse(line));
-      }
-      if (buffer.trim()) handle(JSON.parse(buffer));
+      const outcome = await startAndFollow(
+        "/api/consensus",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ticker: ticker.trim(), mode, focus, modelIds: selected, force }),
+        },
+        handle,
+        (notice) => setNotes((n) => [...n, notice])
+      );
+      if (outcome.status !== "succeeded") setError(outcome.error ?? `the run ended ${outcome.status}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

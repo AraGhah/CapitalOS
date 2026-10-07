@@ -1,6 +1,11 @@
 {
+  "$comment": "Prices are US dollars per million tokens, as listed on 2026-10-06 (third-party summaries of Anthropic's price list; verify at https://www.anthropic.com/pricing). A model without prices is charged UNPRICED_MODEL_USD_PER_MTOK against the daily budget. requestsPerMinute overrides ANTHROPIC_RPM / PROVIDER_RPM for that provider.",
+  "pricesAsOf": "2026-10-06",
   "providers": {
-    "anthropic": { "kind": "anthropic", "keyEnv": "ANTHROPIC_API_KEY" },
+    "anthropic": {
+      "kind": "anthropic",
+      "keyEnv": "ANTHROPIC_API_KEY"
+    },
     "openai": {
       "kind": "openai",
       "baseUrl": "https://api.openai.com/v1",
@@ -13,14 +18,23 @@
       "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
       "keyEnv": "GEMINI_API_KEY"
     },
-    "xai": { "kind": "openai", "baseUrl": "https://api.x.ai/v1", "keyEnv": "XAI_API_KEY", "jsonMode": true },
+    "xai": {
+      "kind": "openai",
+      "baseUrl": "https://api.x.ai/v1",
+      "keyEnv": "XAI_API_KEY",
+      "jsonMode": true
+    },
     "deepseek": {
       "kind": "openai",
       "baseUrl": "https://api.deepseek.com/v1",
       "keyEnv": "DEEPSEEK_API_KEY",
       "jsonMode": true
     },
-    "openrouter": { "kind": "openai", "baseUrl": "https://openrouter.ai/api/v1", "keyEnv": "OPENROUTER_API_KEY" }
+    "openrouter": {
+      "kind": "openai",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "keyEnv": "OPENROUTER_API_KEY"
+    }
   },
   "models": [
     {
@@ -30,8 +44,10 @@
       "modelEnv": "ANTHROPIC_MODEL",
       "label": "Claude Opus",
       "tier": "frontier",
-      "priceIn": null,
-      "priceOut": null
+      "priceIn": 4,
+      "priceOut": 20,
+      "priceCacheRead": 0.4,
+      "priceCacheWrite": 5
     },
     {
       "id": "claude-sonnet",
@@ -39,8 +55,10 @@
       "model": "claude-sonnet-5-5",
       "label": "Claude Sonnet",
       "tier": "standard",
-      "priceIn": null,
-      "priceOut": null
+      "priceIn": 2,
+      "priceOut": 10,
+      "priceCacheRead": 0.2,
+      "priceCacheWrite": 2.5
     },
     {
       "id": "claude-haiku",
@@ -48,13 +66,55 @@
       "model": "claude-haiku-4-5-20251001",
       "label": "Claude Haiku",
       "tier": "fast",
+      "priceIn": 1,
+      "priceOut": 5,
+      "priceCacheRead": 0.1,
+      "priceCacheWrite": 1.25
+    },
+    {
+      "id": "openai",
+      "provider": "openai",
+      "modelEnv": "OPENAI_MODEL",
+      "label": "OpenAI",
+      "tier": "frontier",
       "priceIn": null,
       "priceOut": null
     },
-    { "id": "openai", "provider": "openai", "modelEnv": "OPENAI_MODEL", "label": "OpenAI", "tier": "frontier", "priceIn": null, "priceOut": null },
-    { "id": "gemini", "provider": "google", "modelEnv": "GEMINI_MODEL", "label": "Gemini", "tier": "frontier", "priceIn": null, "priceOut": null },
-    { "id": "grok", "provider": "xai", "modelEnv": "XAI_MODEL", "label": "Grok", "tier": "standard", "priceIn": null, "priceOut": null },
-    { "id": "deepseek", "provider": "deepseek", "modelEnv": "DEEPSEEK_MODEL", "label": "DeepSeek", "tier": "standard", "priceIn": null, "priceOut": null },
-    { "id": "openrouter", "provider": "openrouter", "modelEnv": "OPENROUTER_MODEL", "label": "OpenRouter", "tier": "standard", "priceIn": null, "priceOut": null }
+    {
+      "id": "gemini",
+      "provider": "google",
+      "modelEnv": "GEMINI_MODEL",
+      "label": "Gemini",
+      "tier": "frontier",
+      "priceIn": null,
+      "priceOut": null
+    },
+    {
+      "id": "grok",
+      "provider": "xai",
+      "modelEnv": "XAI_MODEL",
+      "label": "Grok",
+      "tier": "standard",
+      "priceIn": null,
+      "priceOut": null
+    },
+    {
+      "id": "deepseek",
+      "provider": "deepseek",
+      "modelEnv": "DEEPSEEK_MODEL",
+      "label": "DeepSeek",
+      "tier": "standard",
+      "priceIn": null,
+      "priceOut": null
+    },
+    {
+      "id": "openrouter",
+      "provider": "openrouter",
+      "modelEnv": "OPENROUTER_MODEL",
+      "label": "OpenRouter",
+      "tier": "standard",
+      "priceIn": null,
+      "priceOut": null
+    }
   ]
 }

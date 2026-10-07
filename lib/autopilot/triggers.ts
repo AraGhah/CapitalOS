@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { pool } from "../db";
-import { ACCOUNT_ID } from "../constants";
+import type { Actor } from "../actor";
 import { loadBars } from "../market/bars";
 import { marketOverview } from "../market/overview";
 import { analyzeRisk } from "../risk/engine";
@@ -35,15 +35,17 @@ export interface Tracked {
 }
 
 // Held positions and the watchlist: the companies the desk is responsible for.
-export async function trackedCompanies(): Promise<Tracked[]> {
+export async function trackedCompanies(actor: Pick<Actor, "userId" | "accountId">): Promise<Tracked[]> {
   const { rows } = await pool.query(
     `SELECT c.id, c.ticker,
-            EXISTS (SELECT 1 FROM transactions t WHERE t.company_id = c.id AND t.account_id = $1) AS held
+            EXISTS (SELECT 1 FROM transactions t
+                    WHERE t.company_id = c.id AND t.account_id = $1 AND t.voided_at IS NULL) AS held
      FROM companies c
-     WHERE EXISTS (SELECT 1 FROM transactions t WHERE t.company_id = c.id AND t.account_id = $1)
-        OR EXISTS (SELECT 1 FROM watchlist w WHERE w.company_id = c.id)
+     WHERE EXISTS (SELECT 1 FROM transactions t
+                   WHERE t.company_id = c.id AND t.account_id = $1 AND t.voided_at IS NULL)
+        OR EXISTS (SELECT 1 FROM watchlist w WHERE w.company_id = c.id AND w.user_id = $2)
      ORDER BY c.ticker`,
-    [ACCOUNT_ID]
+    [actor.accountId, actor.userId]
   );
   return rows.map((r) => ({ id: r.id, ticker: r.ticker, held: r.held, weight: null }));
 }
@@ -66,7 +68,7 @@ export async function priceAndVolume(tracked: Tracked[]): Promise<AlertDraft[]> 
     if (!loaded || loaded.bars.length < 30) continue;
     const bars = loaded.bars;
     const last = bars[bars.length - 1];
-    // With Yahoo down the bars come from the table, which may end days ago; an
+    // With the provider down the bars come from the table, which may end days ago; an
     // old move is not news and must not be raised as today's alert.
     if (Date.now() - Date.parse(last.date) > STALE_BARS_DAYS * 86_400_000) continue;
     const returns = simpleReturns(bars.map((b) => b.close));
@@ -179,9 +181,9 @@ export async function newFilings(tracked: Tracked[]): Promise<AlertDraft[]> {
 
 /* ------------------------------------------------------- theses, memory */
 
-export async function thesisAndMemory(): Promise<AlertDraft[]> {
+export async function thesisAndMemory(userId: string): Promise<AlertDraft[]> {
   const out: AlertDraft[] = [];
-  const theses = await checkOpenTheses();
+  const theses = await checkOpenTheses(userId);
   const byTicker = new Map<string, typeof theses.invalidated>();
   for (const b of theses.invalidated) byTicker.set(b.ticker, [...(byTicker.get(b.ticker) ?? []), b]);
 
@@ -202,7 +204,7 @@ export async function thesisAndMemory(): Promise<AlertDraft[]> {
     });
   }
 
-  const memory = await checkMemory().catch(() => null);
+  const memory = await checkMemory(userId);
   for (const s of memory?.settled ?? []) {
     if (s.status !== "refuted") continue;
     const { rows } = await pool.query(`SELECT id FROM companies WHERE ticker = $1`, [s.ticker]);
@@ -224,12 +226,15 @@ export async function thesisAndMemory(): Promise<AlertDraft[]> {
 
 /* ------------------------------------------------------- risk and regime */
 
-export async function riskAndRegime(previousRegime: string | null): Promise<{ alerts: AlertDraft[]; regime: string | null }> {
+export async function riskAndRegime(
+  actor: Pick<Actor, "userId" | "accountId">,
+  previousRegime: string | null
+): Promise<{ alerts: AlertDraft[]; regime: string | null }> {
   const out: AlertDraft[] = [];
   const week = isoWeek(new Date());
 
   try {
-    const risk = await analyzeRisk({ kind: "holdings" });
+    const risk = await analyzeRisk(actor, { kind: "holdings" });
     for (const f of risk.findings.filter((x) => x.severity === "high")) {
       out.push({
         companyId: null,

@@ -1,3 +1,4 @@
+import { requirePageActor } from "@/lib/auth/current";
 import Link from "next/link";
 import { listMemory } from "@/lib/ai/memory";
 import { listJournal } from "@/lib/ai/journal";
@@ -24,7 +25,11 @@ const STATUS_TONE: Record<string, string> = {
 };
 
 export default async function JournalPage() {
-  const [entries, memory] = await Promise.all([listJournal({ limit: 100 }), listMemory({ limit: 100 })]);
+  const { actor } = await requirePageActor();
+  const [entries, memory] = await Promise.all([
+    listJournal(actor.userId, { limit: 100 }),
+    listMemory(actor.userId, { limit: 100 }),
+  ]);
   const pending = memory.filter((m) => m.status === "pending").length;
   const settled = memory.filter((m) => m.status === "supported" || m.status === "refuted");
 

@@ -1,29 +1,28 @@
-import type { NextRequest } from "next/server";
+import { route } from "@/lib/http/route";
+import { HttpError, parseJson } from "@/lib/http/errors";
+import { JournalNote } from "@/lib/http/schemas";
 import { addJournal, listJournal } from "@/lib/ai/journal";
 import { findCompany } from "@/lib/company";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(req: NextRequest) {
+export const GET = route(async (req, { actor }) => {
   const ticker = req.nextUrl.searchParams.get("ticker");
   const company = ticker ? await findCompany(ticker) : null;
-  return Response.json({ entries: await listJournal({ companyId: company?.id, limit: 100 }) });
-}
+  if (ticker && !company) return Response.json({ entries: [] });
+  return Response.json({ entries: await listJournal(actor.userId, { companyId: company?.id, limit: 100 }) });
+});
 
 // A note the person writes themselves: the decisions the desk cannot see, like
 // why a position was sized the way it was.
-export async function POST(req: NextRequest) {
-  const body = (await req.json().catch(() => ({}))) as { ticker?: string; title?: string; detail?: string };
-  const title = body.title?.trim();
-  if (!title) return Response.json({ error: "a note needs a title" }, { status: 400 });
-
+export const POST = route(async (req, { actor }) => {
+  const body = await parseJson(req, JournalNote);
   let companyId: string | null = null;
-  if (body.ticker?.trim()) {
+  if (body.ticker) {
     const company = await findCompany(body.ticker);
-    if (!company) return Response.json({ error: `the desk has no company "${body.ticker}"` }, { status: 404 });
+    if (!company) throw new HttpError(404, `the desk has no company "${body.ticker}"`);
     companyId = company.id;
   }
-
-  await addJournal({ companyId, kind: "note", title: title.slice(0, 200), detail: body.detail?.trim().slice(0, 2000) || null });
+  await addJournal({ userId: actor.userId, companyId, kind: "note", title: body.title, detail: body.detail || null });
   return Response.json({ ok: true }, { status: 201 });
-}
+});

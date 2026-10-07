@@ -1,8 +1,8 @@
-import { LOCKS, pool, tryWithLock } from "../db";
-import { ACCOUNT_ID } from "../constants";
+import { LOCKS, pool, tryWithSessionLock } from "../db";
+import type { Actor } from "../actor";
+import { config } from "../config";
 import { getPortfolio } from "../holdings";
 import { runConsensus } from "../ai/committee";
-import { isMode, type Mode } from "../ai/modes";
 import { availableModels } from "../ai/models";
 import { addJournal } from "../ai/journal";
 import {
@@ -28,9 +28,6 @@ import {
    severity alerts on companies the desk tracks, and only up to a daily cap.
 --------------------------------------------------------------------------- */
 
-const MAX_COMMITTEES = Number(process.env.AUTOPILOT_MAX_COMMITTEES ?? 3);
-const COMMITTEE_MODE: Mode = isMode(process.env.AUTOPILOT_MODE) ? (process.env.AUTOPILOT_MODE as Mode) : "standard";
-
 export interface CycleOptions {
   convene: boolean;
 }
@@ -54,32 +51,39 @@ export class CycleBusyError extends Error {
   }
 }
 
-// One pass at a time across every process: a pass that convenes committees can
-// outlast the schedule, and two overlapping passes would both see room under the
-// daily committee cap and both spend it.
-export async function runCycle(opts: CycleOptions): Promise<CycleSummary> {
-  const summary = await tryWithLock(LOCKS.autopilotCycle, () => cycle(opts));
+// One pass at a time per person across every process: a pass that convenes
+// committees can outlast the schedule, and two overlapping passes would both see
+// room under the daily committee cap and both spend it.
+export async function runCycle(actor: Pick<Actor, "userId" | "accountId">, opts: CycleOptions): Promise<CycleSummary> {
+  const summary = await tryWithSessionLock(LOCKS.autopilot(actor.userId), () => cycle(actor, opts));
   if (summary === null) throw new CycleBusyError();
   return summary;
 }
 
-async function cycle(opts: CycleOptions): Promise<CycleSummary> {
-  const { rows: started } = await pool.query(`INSERT INTO autopilot_runs DEFAULT VALUES RETURNING id`);
+async function cycle(actor: Pick<Actor, "userId" | "accountId">, opts: CycleOptions): Promise<CycleSummary> {
+  const { MAX_COMMITTEES, COMMITTEE_MODE } = {
+    MAX_COMMITTEES: config().AUTOPILOT_MAX_COMMITTEES,
+    COMMITTEE_MODE: config().AUTOPILOT_MODE,
+  };
+  const { rows: started } = await pool.query(`INSERT INTO autopilot_runs (user_id) VALUES ($1) RETURNING id`, [
+    actor.userId,
+  ]);
   const runId = started[0].id as string;
   const errors: string[] = [];
 
   try {
-    const tracked = await trackedCompanies();
+    const tracked = await trackedCompanies(actor);
 
     // Weights for held names, so a move can be stated as its effect on the portfolio.
-    const { holdings } = await getPortfolio(ACCOUNT_ID).catch(() => ({ holdings: [] as Awaited<ReturnType<typeof getPortfolio>>["holdings"] }));
+    const { holdings } = await getPortfolio(actor.accountId);
     const weightOf = new Map(holdings.map((h) => [h.ticker, h.weight.toNumber()]));
     const valueOf = new Map(holdings.map((h) => [h.ticker, h.marketValue.toNumber()]));
     for (const c of tracked) c.weight = weightOf.get(c.ticker) ?? null;
 
     const { rows: previous } = await pool.query(
       `SELECT summary->>'regime' AS regime FROM autopilot_runs
-       WHERE finished_at IS NOT NULL AND summary ? 'regime' ORDER BY started_at DESC LIMIT 1`
+       WHERE user_id = $1 AND finished_at IS NOT NULL AND summary ? 'regime' ORDER BY started_at DESC LIMIT 1`,
+      [actor.userId]
     );
 
     // Each detector is independent; one failing is reported, not fatal.
@@ -96,8 +100,8 @@ async function cycle(opts: CycleOptions): Promise<CycleSummary> {
       settle("prices", () => priceAndVolume(tracked), []),
       settle("news", () => newsSurges(tracked), []),
       settle("filings", () => newFilings(tracked), []),
-      settle("theses", () => thesisAndMemory(), []),
-      settle("risk", () => riskAndRegime(previous[0]?.regime ?? null), { alerts: [], regime: null }),
+      settle("theses", () => thesisAndMemory(actor.userId), []),
+      settle("risk", () => riskAndRegime(actor, previous[0]?.regime ?? null), { alerts: [], regime: null }),
     ]);
     const drafts: AlertDraft[] = [...theses, ...moves, ...filings, ...news, ...riskRegime.alerts];
 
@@ -113,10 +117,10 @@ async function cycle(opts: CycleOptions): Promise<CycleSummary> {
             }
           : null;
       const { rows } = await pool.query(
-        `INSERT INTO alerts (company_id, kind, severity, title, detail, dedupe_key, impact)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (dedupe_key) DO NOTHING RETURNING id`,
-        [d.companyId, d.kind, d.severity, d.title, d.detail, d.dedupeKey, impact ? JSON.stringify(impact) : null]
+        `INSERT INTO alerts (user_id, company_id, kind, severity, title, detail, dedupe_key, impact)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (user_id, dedupe_key) DO NOTHING RETURNING id`,
+        [actor.userId, d.companyId, d.kind, d.severity, d.title, d.detail, d.dedupeKey, impact ? JSON.stringify(impact) : null]
       );
       if (rows.length > 0) created.push({ ...d, id: rows[0].id });
     }
@@ -136,7 +140,8 @@ async function cycle(opts: CycleOptions): Promise<CycleSummary> {
         // pointed an alert at was paid for on another day and does not count
         `SELECT count(DISTINCT r.id)::int AS n
          FROM alerts a JOIN consensus_runs r ON r.id = a.run_id
-         WHERE r.created_at >= date_trunc('day', now())`
+         WHERE a.user_id = $1 AND r.created_at >= date_trunc('day', now())`,
+        [actor.userId]
       );
       let room = Math.max(0, MAX_COMMITTEES - today[0].n);
       for (const alert of worth) {
@@ -146,6 +151,7 @@ async function cycle(opts: CycleOptions): Promise<CycleSummary> {
         }
         try {
           const result = await runConsensus({
+            actor,
             ticker: alert.ticker as string,
             mode: COMMITTEE_MODE,
             focus: `What does this change for the investment case? ${alert.title}. ${alert.detail}`,
@@ -160,7 +166,7 @@ async function cycle(opts: CycleOptions): Promise<CycleSummary> {
     }
 
     for (const a of created.filter((x) => x.severity !== "info")) {
-      await addJournal({ companyId: a.companyId, kind: "alert", title: a.title, detail: a.detail, refId: a.id });
+      await addJournal({ userId: actor.userId, companyId: a.companyId, kind: "alert", title: a.title, detail: a.detail, refId: a.id });
     }
 
     const summary: CycleSummary = {
@@ -197,52 +203,51 @@ export interface AlertRow {
   status: "new" | "seen" | "dismissed";
 }
 
-export async function listAlerts(opts: { status?: "new" | "seen" | "dismissed"; limit?: number } = {}): Promise<AlertRow[]> {
-  try {
-    const { rows } = await pool.query(
-      `SELECT a.id, a.created_at, c.ticker, a.kind, a.severity, a.title, a.detail, a.impact, a.run_id, a.status
-       FROM alerts a LEFT JOIN companies c ON c.id = a.company_id
-       WHERE ($1::text IS NULL OR a.status = $1)
-       ORDER BY CASE a.severity WHEN 'high' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, a.created_at DESC
-       LIMIT $2`,
-      [opts.status ?? null, opts.limit ?? 100]
-    );
-    return rows.map((r) => ({
-      id: r.id,
-      createdAt: (r.created_at as Date).toISOString(),
-      ticker: r.ticker,
-      kind: r.kind,
-      severity: r.severity,
-      title: r.title,
-      detail: r.detail,
-      impact: r.impact,
-      runId: r.run_id,
-      status: r.status,
-    }));
-  } catch {
-    return [];
-  }
+export async function listAlerts(
+  userId: string,
+  opts: { status?: "new" | "seen" | "dismissed"; limit?: number } = {}
+): Promise<AlertRow[]> {
+  const { rows } = await pool.query(
+    `SELECT a.id, a.created_at, c.ticker, a.kind, a.severity, a.title, a.detail, a.impact, a.run_id, a.status
+     FROM alerts a LEFT JOIN companies c ON c.id = a.company_id
+     WHERE a.user_id = $1 AND ($2::text IS NULL OR a.status = $2)
+     ORDER BY CASE a.severity WHEN 'high' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, a.created_at DESC
+     LIMIT $3`,
+    [userId, opts.status ?? null, opts.limit ?? 100]
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    createdAt: (r.created_at as Date).toISOString(),
+    ticker: r.ticker,
+    kind: r.kind,
+    severity: r.severity,
+    title: r.title,
+    detail: r.detail,
+    impact: r.impact,
+    runId: r.run_id,
+    status: r.status,
+  }));
 }
 
-export async function setAlertStatus(id: string, status: "new" | "seen" | "dismissed"): Promise<boolean> {
-  const { rowCount } = await pool.query(`UPDATE alerts SET status = $2 WHERE id = $1`, [id, status]);
+export async function setAlertStatus(userId: string, id: string, status: "new" | "seen" | "dismissed"): Promise<boolean> {
+  const { rowCount } = await pool.query(`UPDATE alerts SET status = $3 WHERE id = $1 AND user_id = $2`, [id, userId, status]);
   return (rowCount ?? 0) > 0;
 }
 
-export async function recentCycles(limit = 10): Promise<Array<{ id: string; startedAt: string; finishedAt: string | null; summary: CycleSummary | null; error: string | null }>> {
-  try {
-    const { rows } = await pool.query(
-      `SELECT id, started_at, finished_at, summary, error FROM autopilot_runs ORDER BY started_at DESC LIMIT $1`,
-      [limit]
-    );
-    return rows.map((r) => ({
-      id: String(r.id),
-      startedAt: (r.started_at as Date).toISOString(),
-      finishedAt: r.finished_at ? (r.finished_at as Date).toISOString() : null,
-      summary: r.summary,
-      error: r.error,
-    }));
-  } catch {
-    return [];
-  }
+export async function recentCycles(
+  userId: string,
+  limit = 10
+): Promise<Array<{ id: string; startedAt: string; finishedAt: string | null; summary: CycleSummary | null; error: string | null }>> {
+  const { rows } = await pool.query(
+    `SELECT id, started_at, finished_at, summary, error FROM autopilot_runs
+     WHERE user_id = $1 ORDER BY started_at DESC LIMIT $2`,
+    [userId, limit]
+  );
+  return rows.map((r) => ({
+    id: String(r.id),
+    startedAt: (r.started_at as Date).toISOString(),
+    finishedAt: r.finished_at ? (r.finished_at as Date).toISOString() : null,
+    summary: r.summary,
+    error: r.error,
+  }));
 }

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { Dossier, FeedReport } from "@/lib/dossier";
 import { timeAgo } from "@/lib/format";
+import { startAndFollow } from "@/app/components/jobs";
 
 /* ---------------------------------------------------------------------------
    Scout → Analyst → Strategist.
@@ -48,30 +49,13 @@ export function DeskRunner({
     setProgress(IDLE);
 
     try {
-      const res = await fetch(`/api/research/${encodeURIComponent(ticker)}${force ? "?force=1" : ""}`, {
-        method: "POST",
-      });
-      if (!res.body) throw new Error("the desk returned no stream");
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      // One JSON object per line, and a chunk can split a line in half, so the
-      // tail stays in the buffer until its newline arrives.
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (line.trim()) handleEvent(JSON.parse(line));
-        }
-      }
-      if (buffer.trim()) handleEvent(JSON.parse(buffer));
+      const outcome = await startAndFollow(
+        `/api/research/${encodeURIComponent(ticker)}${force ? "?force=1" : ""}`,
+        { method: "POST" },
+        handleEvent,
+        (notice) => setNotes((n) => [...n, notice])
+      );
+      if (outcome.status !== "succeeded") setError(outcome.error ?? `the run ended ${outcome.status}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -80,6 +64,10 @@ export function DeskRunner({
   }
 
   function handleEvent(event: Record<string, unknown>) {
+    if (event.type === "retrying") {
+      setNotes((n) => [...n, "A feed or model call failed; the run will be retried shortly."]);
+      return;
+    }
     const phase = event.phase as Phase | "cached" | "error";
 
     if (phase === "error") {

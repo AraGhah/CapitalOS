@@ -2,11 +2,11 @@
   "mcpServers": {
     "capitalos": {
       "command": "npx",
-      "args": [
-        "tsx",
-        "mcp/server.ts"
-      ],
-      "cwd": "C:\\Users\\aragh\\OneDrive\\Desktop\\_B_\\AI investment Agents\\CapitalOS"
+      "args": ["tsx", "mcp/server.ts"],
+      "cwd": "/path/to/CapitalOS",
+      "env": {
+        "CAPITALOS_MCP_USER": "you@example.com"
+      }
     }
   }
 }

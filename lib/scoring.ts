@@ -4,6 +4,7 @@ import Decimal from "decimal.js";
 import { pool } from "./db";
 import { DERIVED_METRICS, deriveMetrics, type PeriodFacts } from "./metrics";
 import { capitalisationShares } from "./edgar";
+import { getSplits, sharesOnPriceBasis } from "./splits";
 
 // Read fresh on every run rather than imported, so editing weights.json changes
 // the next score without a rebuild.
@@ -42,8 +43,9 @@ async function annualPeriods(companyId: string): Promise<PeriodFacts[]> {
   return [...byPeriod.values()].sort((a, b) => b.periodEnd.localeCompare(a.periodEnd));
 }
 
-async function latestMarketCap(companyId: string, shares: Decimal | undefined): Promise<Decimal | null> {
-  if (!shares || shares.lte(0)) return null;
+async function latestMarketCap(companyId: string, filed: Decimal | undefined, periodEnd: string): Promise<Decimal | null> {
+  if (!filed || filed.lte(0)) return null;
+  const shares = sharesOnPriceBasis(filed, periodEnd, (await getSplits([companyId])).get(companyId));
 
   const { rows } = await pool.query(
     `SELECT close FROM prices_daily
@@ -73,7 +75,7 @@ export async function latestMetrics(companyId: string): Promise<CompanyMetrics> 
   }
 
   const [current, prior] = periods;
-  const marketCap = await latestMarketCap(companyId, capitalisationShares(current.values));
+  const marketCap = await latestMarketCap(companyId, capitalisationShares(current.values), current.periodEnd);
 
   return {
     periodEnd: current.periodEnd,

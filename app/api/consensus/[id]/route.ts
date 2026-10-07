@@ -1,11 +1,11 @@
-import type { NextRequest } from "next/server";
+import { route } from "@/lib/http/route";
+import { notFound } from "@/lib/http/errors";
 import { getRun } from "@/lib/ai/store";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
-  const { id } = await ctx.params;
-  const run = await getRun(id);
-  if (!run) return Response.json({ error: "no such run" }, { status: 404 });
+export const GET = route<{ id: string }>(async (_req, { actor, params }) => {
+  const run = await getRun(actor.userId, params.id);
+  if (!run) throw notFound("no such run");
   return Response.json(run);
-}
+});

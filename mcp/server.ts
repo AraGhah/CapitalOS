@@ -1,9 +1,16 @@
+import "./stderr";
 import "../lib/env";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import type Decimal from "decimal.js";
-import { ACCOUNT_ID, BENCHMARK_TICKER } from "../lib/constants";
+import { BENCHMARK_TICKER } from "../lib/constants";
+import type { Actor } from "../lib/actor";
+import { config } from "../lib/config";
+import { findUserByEmail } from "../lib/auth/users";
+import { ensureAccount } from "../lib/auth/sessions";
+import { listTransactions } from "../lib/ledger";
+import { log } from "../lib/log";
 import { getPortfolio } from "../lib/holdings";
 import { getPortfolioSeries } from "../lib/timeseries";
 import { getScores } from "../lib/scoring";
@@ -19,7 +26,6 @@ import {
   getFundamentals,
   getMacroSeries,
   getPriceHistory,
-  getTransactions,
   getWatchlist,
   addToWatchlist,
   removeFromWatchlist,
@@ -29,6 +35,22 @@ import {
 } from "../lib/company";
 
 const server = new McpServer({ name: "capitalos", version: "1.0.0" });
+
+// The MCP server acts for exactly one person, named in its configuration. A
+// tool never takes an account or a user from the caller: whoever can talk to
+// this process can only ever see that person's data.
+let actor!: Pick<Actor, "userId" | "accountId">;
+
+async function resolveActor(): Promise<Pick<Actor, "userId" | "accountId">> {
+  const email = config().CAPITALOS_MCP_USER;
+  if (!email) throw new Error("set CAPITALOS_MCP_USER to the e-mail of the account the MCP server acts for");
+  const user = await findUserByEmail(email);
+  if (!user) throw new Error(`no account with the e-mail ${email}`);
+  const account = await ensureAccount(user.id);
+  return { userId: user.id, accountId: account.id };
+}
+
+const ISO_DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "a date like 2026-10-05");
 
 // Tools hand back stored values and the rows they came from. Interpretation is
 // the caller's job, which is why nothing here returns prose.
@@ -58,10 +80,10 @@ server.registerTool(
     title: "Portfolio positions",
     description:
       "Open positions with quantity, average cost, market value, weight and unrealized P/L.",
-    inputSchema: { accountId: z.string().optional() },
+    inputSchema: {},
   },
-  async ({ accountId }) => {
-    const { holdings } = await getPortfolio(accountId ?? ACCOUNT_ID);
+  async () => {
+    const { holdings } = await getPortfolio(actor.accountId);
     return reply(
       holdings.map((h) => ({
         ticker: h.ticker,
@@ -76,7 +98,7 @@ server.registerTool(
         weight: h.weight.toFixed(4),
       })),
       [
-        { kind: "transactions", ref: accountId ?? ACCOUNT_ID },
+        { kind: "transactions", ref: actor.accountId },
         { kind: "prices_daily", ref: "latest close per company" },
       ]
     );
@@ -89,10 +111,10 @@ server.registerTool(
     title: "Portfolio performance",
     description:
       "Total return against the benchmark, both indexed to 100 at the first comparable date.",
-    inputSchema: { accountId: z.string().optional(), includeSeries: z.boolean().optional() },
+    inputSchema: { includeSeries: z.boolean().optional() },
   },
-  async ({ accountId, includeSeries }) => {
-    const account = accountId ?? ACCOUNT_ID;
+  async ({ includeSeries }) => {
+    const account = actor.accountId;
     const [{ totalReturn }, series] = await Promise.all([
       getPortfolio(account),
       getPortfolioSeries(account),
@@ -126,15 +148,13 @@ server.registerTool(
     title: "Portfolio transactions",
     description: "Recorded buys and sells, most recent first.",
     inputSchema: {
-      accountId: z.string().optional(),
       ticker: z.string().optional(),
       limit: z.number().int().min(1).max(500).optional(),
     },
   },
-  async ({ accountId, ticker, limit }) => {
-    const account = accountId ?? ACCOUNT_ID;
-    const rows = await getTransactions(account, { ticker, limit });
-    return reply(rows, [{ kind: "transactions", ref: account }]);
+  async ({ ticker, limit }) => {
+    const rows = await listTransactions(actor, { ticker, limit });
+    return reply(rows, [{ kind: "transactions", ref: actor.accountId }]);
   }
 );
 
@@ -204,8 +224,8 @@ server.registerTool(
     description: "Daily bars for a ticker, oldest first.",
     inputSchema: {
       ticker: z.string(),
-      start: z.string().optional(),
-      end: z.string().optional(),
+      start: ISO_DATE.optional(),
+      end: ISO_DATE.optional(),
       limit: z.number().int().min(1).max(2000).optional(),
     },
   },
@@ -336,7 +356,7 @@ server.registerTool(
     description: "Companies on the watchlist with any note recorded against them.",
     inputSchema: {},
   },
-  async () => reply(await getWatchlist(), [{ kind: "watchlist", ref: "all" }])
+  async () => reply(await getWatchlist(actor.userId), [{ kind: "watchlist", ref: "all" }])
 );
 
 server.registerTool(
@@ -345,9 +365,9 @@ server.registerTool(
     title: "Macro series",
     description: "Stored observations for a macro series, oldest first.",
     inputSchema: {
-      seriesId: z.string(),
-      start: z.string().optional(),
-      end: z.string().optional(),
+      seriesId: z.string().max(40),
+      start: ISO_DATE.optional(),
+      end: ISO_DATE.optional(),
       limit: z.number().int().min(1).max(2000).optional(),
     },
   },
@@ -369,7 +389,7 @@ server.registerTool(
     const company = await resolve(ticker);
     if (typeof company === "string") return failed(company);
 
-    const note = await getResearchNote(company.id, company.ticker, company.name);
+    const note = await getResearchNote(actor.userId, company.id, company.ticker, company.name);
     const cited = new Map<string, ToolSource>();
     for (const claims of Object.values(note.fields)) {
       for (const claim of claims) {
@@ -410,7 +430,7 @@ server.registerTool(
     if (typeof company === "string") return failed(company);
 
     try {
-      const result = await addClaims(company.id, field as ResearchField, claims);
+      const result = await addClaims(actor.userId, company.id, field as ResearchField, claims);
       return reply(result, [companySource(company)]);
     } catch (err) {
       return failed((err as Error).message);
@@ -471,7 +491,7 @@ server.registerTool(
 
     try {
       const parsed = parseRules(rules);
-      const id = await openThesis(company.id, rationale ?? null, parsed);
+      const id = await openThesis(actor.userId, company.id, rationale ?? null, parsed);
       return reply({ id, ticker: company.ticker, rules: parsed }, [companySource(company)]);
     } catch (err) {
       return failed((err as Error).message);
@@ -488,7 +508,7 @@ server.registerTool(
     inputSchema: { status: z.enum(["open", "invalidated", "closed"]).optional() },
   },
   async ({ status }) => {
-    const evaluations = await listTheses(status);
+    const evaluations = await listTheses(actor.userId, status);
     return reply(evaluations, [
       { kind: "scores", ref: "theses evaluated against latest annual fundamentals" },
     ]);
@@ -500,10 +520,10 @@ server.registerTool(
   {
     title: "Close a thesis",
     description: "Mark a thesis closed once the position is exited. Does not evaluate any rule.",
-    inputSchema: { id: z.string() },
+    inputSchema: { id: z.uuid() },
   },
   async ({ id }) => {
-    const found = await setThesisStatus(id, "closed");
+    const found = await setThesisStatus(actor.userId, id, "closed");
     if (!found) return failed(`no thesis with id ${id}`);
     return reply({ id, status: "closed" }, []);
   }
@@ -521,7 +541,7 @@ server.registerTool(
     const company = await resolve(ticker);
     if (typeof company === "string") return failed(company);
 
-    await addToWatchlist(company.id, note ?? null);
+    await addToWatchlist(actor.userId, company.id, note?.slice(0, 500) ?? null);
     return reply({ ticker: company.ticker, note: note ?? null }, [companySource(company)]);
   }
 );
@@ -537,7 +557,7 @@ server.registerTool(
     const company = await resolve(ticker);
     if (typeof company === "string") return failed(company);
 
-    const removed = await removeFromWatchlist(company.id);
+    const removed = await removeFromWatchlist(actor.userId, company.id);
     return reply({ ticker: company.ticker, removed }, [companySource(company)]);
   }
 );
@@ -554,11 +574,13 @@ server.registerTool(
 );
 
 async function main() {
+  actor = await resolveActor();
   await server.connect(new StdioServerTransport());
+  log.info({ userId: actor.userId }, "mcp server ready");
 }
 
 main().catch((err) => {
   // stderr: stdout belongs to the MCP protocol
-  console.error(err instanceof Error ? err.message : err);
+  log.fatal({ err: { message: (err as Error).message } }, "mcp server could not start");
   process.exit(1);
 });

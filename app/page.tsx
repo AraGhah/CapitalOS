@@ -1,9 +1,9 @@
-import Decimal from "decimal.js";
 import Link from "next/link";
 import { Suspense } from "react";
 import { getPortfolio } from "@/lib/holdings";
 import { getPortfolioSeries } from "@/lib/timeseries";
-import { ACCOUNT_ID, BENCHMARK_TICKER } from "@/lib/constants";
+import { BENCHMARK_TICKER } from "@/lib/constants";
+import { requirePageActor } from "@/lib/auth/current";
 import { listTheses } from "@/lib/theses";
 import {
   getDeskSentiment,
@@ -29,8 +29,9 @@ import { listAlerts } from "@/lib/autopilot/cycle";
 export const dynamic = "force-dynamic";
 
 export default async function DeskPage() {
+  const { actor } = await requirePageActor();
   const [
-    { holdings, totalReturn },
+    { holdings, totalReturn, integrity, valuation },
     series,
     theses,
     tape,
@@ -44,25 +45,27 @@ export default async function DeskPage() {
     memory,
     openAlerts,
   ] = await Promise.all([
-    getPortfolio(ACCOUNT_ID),
-    getPortfolioSeries(ACCOUNT_ID),
-    listTheses(),
-    getTape(),
+    getPortfolio(actor.accountId),
+    getPortfolioSeries(actor.accountId),
+    listTheses(actor.userId),
+    getTape(actor),
     getFeedStatus(),
-    getPipeline(),
+    getPipeline(actor.userId),
     getWire(12),
     getDiscoveryFeeds(),
     getDeskSentiment(),
     getVerdicts(),
-    listRuns({ limit: 5 }),
-    listMemory({ limit: 50 }),
-    listAlerts({ status: "new", limit: 5 }),
+    listRuns(actor.userId, { limit: 5 }),
+    listMemory(actor.userId, { limit: 50 }),
+    listAlerts(actor.userId, { status: "new", limit: 5 }),
   ]);
   const brokenMemory = memory.filter((m) => m.status === "refuted");
 
   const live = theses.filter((t) => t.thesis.status !== "closed");
   const broken = live.filter((t) => t.thesis.status === "invalidated" || t.breached);
-  const totalMarketValue = holdings.reduce((sum, h) => sum.add(h.marketValue), new Decimal(0));
+  const totalMarketValue = valuation.totalValue;
+  const base = valuation.baseCurrency;
+  const pct = (x: number) => `${x >= 0 ? "+" : ""}${(x * 100).toFixed(2)}%`;
   const sparkByTicker = new Map(tape.map((t) => [t.ticker, t.spark]));
 
   const wireItems = wire.map((w) => ({
@@ -87,22 +90,43 @@ export default async function DeskPage() {
         <Pipeline stages={stages} />
       </div>
 
+      {integrity.length > 0 && (
+        <p className="integrity-warning" role="alert" style={{ marginBottom: "1rem" }}>
+          The ledger sells more than it bought for {integrity.map((i) => `${i.ticker} (${i.oversold} shares)`).join(", ")}.
+          These rows predate the ledger&apos;s checks; void the wrong ones on the Ledger page.
+        </p>
+      )}
+
       <div className="tiles" style={{ marginBottom: "1rem" }}>
         <div className="tile">
-          <span className="label">Total value</span>
+          <span className="label">Total value · {base}</span>
           <div className="value">{money(totalMarketValue.toNumber())}</div>
           <div className="foot">
             {holdings.length} {holdings.length === 1 ? "position" : "positions"}
+            {valuation.tracksCash && ` + ${money(valuation.totalValue.sub(valuation.positionsValue).toNumber())} cash`}
           </div>
         </div>
 
         <div className="tile">
-          <span className="label">Total return</span>
-          <div className={`value ${totalReturn.gte(0) ? "up" : "down"}`}>
-            {totalReturn.gte(0) ? "+" : ""}
-            {totalReturn.mul(100).toFixed(2)}%
+          <span className="label" title="Time-weighted: what the investments returned, with money put in or taken out excluded">
+            Time-weighted return
+          </span>
+          <div className={`value ${totalReturn.gte(0) ? "up" : "down"}`}>{pct(totalReturn.toNumber())}</div>
+          <div className="foot">
+            {valuation.twr.annualized === null ? "since the first trade" : `${pct(valuation.twr.annualized)} a year`}
           </div>
-          <div className="foot">cost basis to last close</div>
+        </div>
+
+        <div className="tile">
+          <span className="label" title="Money-weighted (XIRR): the annual rate your own contributions and withdrawals earned">
+            Money-weighted (XIRR)
+          </span>
+          <div className={`value ${valuation.mwr === null ? "" : valuation.mwr >= 0 ? "up" : "down"}`}>
+            {valuation.mwr === null ? "—" : pct(valuation.mwr)}
+          </div>
+          <div className="foot">
+            a year · dividends {money(valuation.dividendIncome.toNumber())}
+          </div>
         </div>
 
         <div className="tile">
@@ -169,7 +193,7 @@ export default async function DeskPage() {
                     <th>Qty</th>
                     <th>Avg cost</th>
                     <th>Last</th>
-                    <th>Value</th>
+                    <th>Value ({base})</th>
                     <th>Weight</th>
                     <th>Unrealized</th>
                     <th>Verdict</th>
@@ -190,7 +214,18 @@ export default async function DeskPage() {
                         </td>
                         <td className="num">{h.qty.toString()}</td>
                         <td className="num">{h.avgCost.toFixed(2)}</td>
-                        <td className="num">{h.price.toFixed(2)}</td>
+                        <td className="num">
+                          {h.price.toFixed(2)}
+                          {h.currency !== base && <span className="subtle"> {h.currency}</span>}
+                          {(!h.priced || h.stale) && (
+                            <span
+                              className="pill warn"
+                              title={h.priced ? `last close ${h.priceDate}; run the price refresh` : "no stored price; valued at cost"}
+                            >
+                              {h.priced ? "stale" : "at cost"}
+                            </span>
+                          )}
+                        </td>
                         <td className="num">{money(h.marketValue.toNumber())}</td>
                         <td className="num">{h.weight.mul(100).toFixed(1)}%</td>
                         <td className={`num ${h.unrealizedPL.gte(0) ? "up" : "down"}`}>
@@ -309,7 +344,7 @@ export default async function DeskPage() {
           )}
 
           <Suspense fallback={null}>
-            <RiskBrief />
+            <RiskBrief actor={actor} />
           </Suspense>
 
           <section className="panel">

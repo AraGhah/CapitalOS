@@ -13,18 +13,36 @@ export interface Position {
   avgCost: Decimal;
   realizedPL: Decimal;
   costEverInvested: Decimal;
+  // Shares sold that the ledger never held. The write path refuses these, so a
+  // non-zero value means a row predates that check (or the data was edited by
+  // hand); it is reported, never silently absorbed.
+  oversold: Decimal;
+}
+
+// Time order, and at the same moment a buy before a sell: a trade entered with a
+// date only lands at noon, and buying and selling on one day is a round trip,
+// not a short. lib/ledger validates writes with exactly this order.
+export function compareTxns(
+  a: { executedAt: Date; side: "buy" | "sell" },
+  b: { executedAt: Date; side: "buy" | "sell" }
+): number {
+  const byTime = a.executedAt.getTime() - b.executedAt.getTime();
+  if (byTime !== 0) return byTime;
+  if (a.side === b.side) return 0;
+  return a.side === "buy" ? -1 : 1;
 }
 
 const ZERO = new Decimal(0);
 
 // average cost method: a sell doesn't change avgCost, only qty and realizedPL
 export function buildPosition(txns: Txn[]): Position {
-  const sorted = [...txns].sort((a, b) => a.executedAt.getTime() - b.executedAt.getTime());
+  const sorted = [...txns].sort(compareTxns);
 
   let qty = ZERO;
   let avgCost = ZERO;
   let realizedPL = ZERO;
   let costEverInvested = ZERO;
+  let oversold = ZERO;
 
   for (const t of sorted) {
     const txQty = new Decimal(t.qty);
@@ -38,10 +56,11 @@ export function buildPosition(txns: Txn[]): Position {
       qty = newQty;
       costEverInvested = costEverInvested.add(cost);
     } else {
-      // The API refuses a sell larger than the position, but rows written before
-      // it did may exist. Only shares actually held can be sold: the excess is
-      // ignored rather than turned into a short the ledger never recorded.
+      // Only shares actually held can be sold. The excess is not turned into a
+      // short the ledger never recorded; it is counted, so the page can say the
+      // ledger is inconsistent instead of quietly showing a tidy position.
       const sold = Decimal.min(txQty, qty);
+      if (txQty.gt(qty)) oversold = oversold.add(txQty.sub(qty));
       if (sold.lte(0)) continue;
       const proceeds = sold.mul(txPrice).sub(txFees);
       realizedPL = realizedPL.add(proceeds.sub(avgCost.mul(sold)));
@@ -50,69 +69,5 @@ export function buildPosition(txns: Txn[]): Position {
     }
   }
 
-  return { qty, avgCost, realizedPL, costEverInvested };
-}
-
-export interface Holding {
-  companyId: string;
-  qty: Decimal;
-  avgCost: Decimal;
-  price: Decimal;
-  // false when no stored close exists and the position is marked at its cost,
-  // so a flat P/L can be told apart from a missing price
-  priced: boolean;
-  costBasis: Decimal;
-  marketValue: Decimal;
-  unrealizedPL: Decimal;
-  realizedPL: Decimal;
-  weight: Decimal;
-}
-
-export function summarizeHoldings(
-  positions: Map<string, Position>,
-  prices: Map<string, Decimal>
-): Holding[] {
-  const open = [...positions.entries()].filter(([, p]) => p.qty.gt(0));
-
-  const totalMarketValue = open.reduce((sum, [companyId, p]) => {
-    const price = prices.get(companyId) ?? p.avgCost;
-    return sum.add(p.qty.mul(price));
-  }, ZERO);
-
-  return open.map(([companyId, p]) => {
-    const price = prices.get(companyId) ?? p.avgCost;
-    const marketValue = p.qty.mul(price);
-    const costBasis = p.avgCost.mul(p.qty);
-    return {
-      companyId,
-      qty: p.qty,
-      avgCost: p.avgCost,
-      price,
-      priced: prices.has(companyId),
-      costBasis,
-      marketValue,
-      unrealizedPL: marketValue.sub(costBasis),
-      realizedPL: p.realizedPL,
-      weight: totalMarketValue.isZero() ? ZERO : marketValue.div(totalMarketValue),
-    };
-  });
-}
-
-// realized + unrealized gain over everything ever put in
-export function totalReturn(positions: Map<string, Position>, prices: Map<string, Decimal>): Decimal {
-  let realizedPL = ZERO;
-  let unrealizedPL = ZERO;
-  let costEverInvested = ZERO;
-
-  for (const [companyId, p] of positions) {
-    realizedPL = realizedPL.add(p.realizedPL);
-    costEverInvested = costEverInvested.add(p.costEverInvested);
-    if (p.qty.gt(0)) {
-      const price = prices.get(companyId) ?? p.avgCost;
-      unrealizedPL = unrealizedPL.add(p.qty.mul(price).sub(p.avgCost.mul(p.qty)));
-    }
-  }
-
-  if (costEverInvested.isZero()) return ZERO;
-  return realizedPL.add(unrealizedPL).div(costEverInvested);
+  return { qty, avgCost, realizedPL, costEverInvested, oversold };
 }

@@ -1,3 +1,4 @@
+import { requirePageActor } from "@/lib/auth/current";
 import Link from "next/link";
 import { availableModels, listRegistry } from "@/lib/ai/models";
 import { listRuns } from "@/lib/ai/store";
@@ -11,7 +12,8 @@ export default async function CommitteePage({ searchParams }: PageProps<"/commit
   const { ticker } = await searchParams;
   const models = availableModels();
   const registry = listRegistry();
-  const runs = await listRuns({ limit: 25 });
+  const { actor } = await requirePageActor();
+  const runs = await listRuns(actor.userId, { limit: 25 });
 
   return (
     <div>

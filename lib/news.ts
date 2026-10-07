@@ -2,6 +2,8 @@ import { createHash } from "crypto";
 import { pool } from "./db";
 import { cosineSim, embed } from "./embeddings";
 import { isWebUrl } from "./url";
+import { secUserAgent } from "./config";
+import { take, UPSTREAM } from "./ratelimit";
 
 export interface Article {
   url: string;
@@ -14,7 +16,6 @@ export interface Article {
 // with a plain-text notice rather than an error status. In practice it throttles
 // harder than that and occasionally drops the connection outright, so each
 // request waits its turn and then backs off and tries again.
-const GDELT_INTERVAL_MS = 6000;
 const MAX_ATTEMPTS = 4;
 const BACKOFF_MS = 8000;
 
@@ -24,14 +25,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// One GDELT request at a time, each starting at least GDELT_INTERVAL_MS after
-// the last. Callers queue on a chain; reading a shared timestamp instead let
-// concurrent callers all decide it was their turn at once.
-let gate: Promise<void> = Promise.resolve();
+// One GDELT request every few seconds across every process, from a shared
+// bucket; a per-process chain let two processes each think it was their turn.
 function takeTurn(): Promise<void> {
-  const turn = gate.then(() => sleep(GDELT_INTERVAL_MS));
-  gate = turn;
-  return turn;
+  return take(UPSTREAM.gdelt, 5 * 60_000);
 }
 
 function isThrottleNotice(body: string): boolean {
@@ -46,7 +43,7 @@ async function gdeltRequest(url: string): Promise<string> {
 
     try {
       const res = await fetch(url, {
-        headers: { "User-Agent": process.env.SEC_USER_AGENT ?? "CapitalOS contact@example.com" },
+        headers: { "User-Agent": secUserAgent() },
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
       const body = await res.text();
@@ -207,21 +204,15 @@ export function clusterArticles(
 
 async function upsertNewsSource(article: Article, embedding: number[]): Promise<string> {
   const rawHash = createHash("sha256").update(article.title).digest("hex");
-
-  const existing = await pool.query(`SELECT id FROM sources WHERE url = $1`, [article.url]);
-  if (existing.rows.length > 0) {
-    await pool.query(`UPDATE sources SET embedding = $2 WHERE id = $1 AND embedding IS NULL`, [
-      existing.rows[0].id,
-      JSON.stringify(embedding),
-    ]);
-    return existing.rows[0].id;
-  }
-
+  // One row per news URL (unique index): the embedding is filled in if the row
+  // was first written by the scout, which stores none.
   const { rows } = await pool.query(
     `INSERT INTO sources (kind, url, title, published_at, raw_hash, embedding)
      VALUES ('news', $1, $2, $3, $4, $5)
+     ON CONFLICT (url) WHERE kind = 'news'
+     DO UPDATE SET embedding = COALESCE(sources.embedding, EXCLUDED.embedding)
      RETURNING id`,
-    [article.url, article.title, article.publishedAt, rawHash, JSON.stringify(embedding)]
+    [article.url, article.title.slice(0, 500), article.publishedAt, rawHash, JSON.stringify(embedding)]
   );
   return rows[0].id;
 }

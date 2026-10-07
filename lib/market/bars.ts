@@ -3,7 +3,7 @@ import { fetchChart } from "../quote";
 
 /* ---------------------------------------------------------------------------
    A year of daily bars for any symbol, shared by the risk engine, the market
-   overview and the scanner. Yahoo is asked first because a risk or momentum
+   overview and the scanner. The market-data provider is asked first because a risk or momentum
    figure on stale prices is worse than none; stored bars are the fallback.
    Kept for half an hour, so a page reload does not refetch a dozen charts.
 --------------------------------------------------------------------------- */
@@ -24,7 +24,7 @@ const MIN_BARS = 60;
 const MAX_CACHED = 400;
 const cache = new Map<string, { at: number; loaded: Loaded | null }>();
 
-// range is Yahoo's: "1y" for risk and momentum, "10y" for a backtest.
+// "1y" for risk and momentum, "10y" for a backtest.
 export async function loadBars(ticker: string, range: "1y" | "5y" | "10y" = "1y"): Promise<Loaded | null> {
   const key = `${ticker}|${range}`;
   const hit = cache.get(key);
@@ -36,7 +36,7 @@ export async function loadBars(ticker: string, range: "1y" | "5y" | "10y" = "1y"
     const bars = chart.bars
       .filter((b) => b.close !== null && b.close > 0)
       .map((b) => ({ date: b.date, close: b.close as number, volume: b.volume }));
-    if (bars.length >= MIN_BARS) loaded = { bars, source: `Yahoo Finance daily chart, ${range}` };
+    if (bars.length >= MIN_BARS) loaded = { bars, source: `${chart.source} daily closes, ${range}` };
   } catch {
     // fall through to stored bars
   }

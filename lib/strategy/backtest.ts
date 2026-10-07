@@ -5,6 +5,7 @@ import { capitalisationShares } from "../edgar";
 import { loadBars, type Bar } from "../market/bars";
 import { METRICS, passes, type MetricKey, type ScreenRule } from "../scanner";
 import { annualisedVol, maxDrawdown, mean, TRADING_DAYS } from "../risk/stats";
+import { getSplits, sharesOnPriceBasis, type Split } from "../splits";
 
 /* ---------------------------------------------------------------------------
    The backtesting lab.
@@ -129,7 +130,7 @@ export interface BacktestResult {
 
 /* ------------------------------------------------------- point in time */
 
-interface FactRow {
+export interface FactRow {
   metric: string;
   periodEnd: string;
   value: Decimal;
@@ -197,7 +198,13 @@ function priceMetrics(bars: Bar[], upto: number): Partial<Record<MetricKey, numb
   return out;
 }
 
-function metricsAsOf(facts: FactRow[] | undefined, bars: Bar[], upto: number, date: string): Partial<Record<MetricKey, number>> {
+export function metricsAsOf(
+  facts: FactRow[] | undefined,
+  bars: Bar[],
+  upto: number,
+  date: string,
+  splits?: Split[]
+): Partial<Record<MetricKey, number>> {
   const out = priceMetrics(bars, upto);
   if (!facts) return out;
   const periods = periodsAsOf(facts, date);
@@ -205,8 +212,10 @@ function metricsAsOf(facts: FactRow[] | undefined, bars: Bar[], upto: number, da
 
   const [current, prior] = periods;
   const price = bars[upto].close;
-  const shares = capitalisationShares(current.values);
-  const marketCap = shares && shares.gt(0) ? shares.mul(price) : null;
+  // Shares as filed, restated onto the split-adjusted basis the bars are in.
+  const filed = capitalisationShares(current.values);
+  const shares = filed && filed.gt(0) ? sharesOnPriceBasis(filed, current.periodEnd, splits) : null;
+  const marketCap = shares ? shares.mul(price) : null;
 
   for (const [key, value] of deriveMetrics({ current, prior, marketCap })) {
     if ((BACKTEST_METRICS as string[]).includes(key)) out[key as MetricKey] = value.toNumber();
@@ -256,6 +265,7 @@ export async function runBacktest(spec: StrategySpec): Promise<BacktestResult> {
   if (!spy) throw new Error("no benchmark prices could be loaded for SPY");
 
   const facts = await annualFacts(companies.map((c) => c.id));
+  const splits = await getSplits(companies.map((c) => c.id as string));
   const universe = companies
     .map((c, i) => ({ id: c.id as string, ticker: c.ticker as string, bars: loaded[i]?.bars ?? null }))
     .filter((c) => {
@@ -321,7 +331,7 @@ export async function runBacktest(spec: StrategySpec): Promise<BacktestResult> {
         .map((c, u) => {
           const i = index[u].get(date);
           if (i === undefined || i < 21) return null;
-          const metrics = metricsAsOf(facts.get(c.id), c.bars, i, date);
+          const metrics = metricsAsOf(facts.get(c.id), c.bars, i, date, splits.get(c.id));
           const ok = spec.rules.every((r) => metrics[r.metric] !== undefined && passes(r, metrics[r.metric] as number));
           const rank = metrics[spec.rankBy];
           return ok && rank !== undefined ? { ticker: c.ticker, rank, price: c.bars[i].close } : null;

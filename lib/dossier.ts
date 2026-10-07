@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { pool } from "./db";
 import type { Article } from "./news";
 import type { FeedId } from "./feeds";
@@ -19,50 +18,40 @@ export interface HeadlineRow {
 
 // Every headline gets a sources row first, so the thing a claim or a tag points
 // at exists independently of the headline table. Re-running the scout on the same
-// story updates nothing and inserts nothing.
+// story updates nothing and inserts nothing. Two set-based statements per feed,
+// not two or three round trips per article; the unique index on news URLs
+// makes concurrent scouts safe.
 export async function storeHeadlines(
   companyId: string,
   feed: FeedId,
   articles: Article[]
 ): Promise<number> {
-  let stored = 0;
+  const byUrl = new Map<string, Article>();
+  for (const a of articles) if (!byUrl.has(a.url)) byUrl.set(a.url, a);
+  const list = [...byUrl.values()];
+  if (list.length === 0) return 0;
 
-  for (const article of articles) {
-    const rawHash = createHash("sha256").update(article.title).digest("hex");
+  const urls = list.map((a) => a.url);
+  const titles = list.map((a) => a.title.slice(0, 500));
+  const published = list.map((a) => a.publishedAt);
 
-    // sources has no unique constraint on url, so an existing row is looked up
-    // first — the same pattern the news ingest uses.
-    const existing = await pool.query(`SELECT id FROM sources WHERE url = $1 LIMIT 1`, [
-      article.url,
-    ]);
-    const source =
-      existing.rows.length > 0
-        ? existing
-        : await pool.query(
-            `INSERT INTO sources (kind, url, title, published_at, raw_hash)
-             VALUES ('news', $1, $2, $3, $4)
-             RETURNING id`,
-            [article.url, article.title, article.publishedAt, rawHash]
-          );
+  await pool.query(
+    `INSERT INTO sources (kind, url, title, published_at, raw_hash)
+     SELECT 'news', u, t, p::timestamptz, encode(sha256(convert_to(t, 'UTF8')), 'hex')
+     FROM unnest($1::text[], $2::text[], $3::text[]) AS x(u, t, p)
+     ON CONFLICT (url) WHERE kind = 'news' DO NOTHING`,
+    [urls, titles, published]
+  );
 
-    const { rowCount } = await pool.query(
-      `INSERT INTO headlines (company_id, source_id, feed, title, url, domain, published_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (company_id, url) DO NOTHING`,
-      [
-        companyId,
-        source.rows[0].id,
-        feed,
-        article.title,
-        article.url,
-        article.domain,
-        article.publishedAt,
-      ]
-    );
-    stored += rowCount ?? 0;
-  }
-
-  return stored;
+  const { rowCount } = await pool.query(
+    `INSERT INTO headlines (company_id, source_id, feed, title, url, domain, published_at)
+     SELECT $1, s.id, $2, x.t, x.u, x.d, x.p::timestamptz
+     FROM unnest($3::text[], $4::text[], $5::text[], $6::text[]) AS x(u, t, d, p)
+     JOIN sources s ON s.url = x.u AND s.kind = 'news'
+     ON CONFLICT (company_id, url) DO NOTHING`,
+    [companyId, feed, urls, titles, list.map((a) => a.domain), published]
+  );
+  return rowCount ?? 0;
 }
 
 export async function getHeadlines(companyId: string, limit = 120): Promise<HeadlineRow[]> {
@@ -158,6 +147,7 @@ export interface Dossier {
 }
 
 export interface DossierInput {
+  requestedBy: string;
   companyId: string;
   inputHash: string;
   headlineIds: string[];
@@ -180,8 +170,8 @@ export async function saveDossier(input: DossierInput): Promise<string> {
   const { rows } = await pool.query(
     `INSERT INTO dossiers (company_id, input_hash, headline_count, verdict, confidence, risk,
                            horizon, brief_headline, brief_summary, entry_plan,
-                           bull, bear, catalysts, sentiment, feeds, provider)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                           bull, bear, catalysts, sentiment, feeds, provider, requested_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
      ON CONFLICT (company_id, input_hash) DO UPDATE
        SET created_at = now(),
            verdict = EXCLUDED.verdict,
@@ -196,7 +186,8 @@ export async function saveDossier(input: DossierInput): Promise<string> {
            catalysts = EXCLUDED.catalysts,
            sentiment = EXCLUDED.sentiment,
            feeds = EXCLUDED.feeds,
-           provider = EXCLUDED.provider
+           provider = EXCLUDED.provider,
+           requested_by = EXCLUDED.requested_by
      RETURNING id`,
     [
       input.companyId,
@@ -215,6 +206,7 @@ export async function saveDossier(input: DossierInput): Promise<string> {
       JSON.stringify(input.sentiment),
       JSON.stringify(input.feeds),
       input.provider,
+      input.requestedBy,
     ]
   );
 

@@ -75,6 +75,7 @@ export interface RuleCheck {
 
 export interface Thesis {
   id: string;
+  userId: string;
   companyId: string;
   ticker: string;
   name: string;
@@ -119,6 +120,7 @@ export async function evaluateThesis(thesis: Thesis): Promise<ThesisEvaluation> 
 function toThesis(row: Record<string, unknown>): Thesis {
   return {
     id: row.id as string,
+    userId: row.user_id as string,
     companyId: row.company_id as string,
     ticker: row.ticker as string,
     name: row.name as string,
@@ -129,62 +131,76 @@ function toThesis(row: Record<string, unknown>): Thesis {
   };
 }
 
-export async function listTheses(status?: Thesis["status"]): Promise<ThesisEvaluation[]> {
+// One person's theses, or — with userId null — every thesis on the desk, which
+// only the scheduled checker asks for.
+export async function listTheses(
+  userId: string | null,
+  status?: Thesis["status"],
+  opts: { companyId?: string } = {}
+): Promise<ThesisEvaluation[]> {
   const { rows } = await pool.query(
-    `SELECT t.id, t.company_id, c.ticker, c.name, t.opened_at, t.rationale,
+    `SELECT t.id, t.user_id, t.company_id, c.ticker, c.name, t.opened_at, t.rationale,
             t.invalidation_rules, t.status
      FROM theses t
      JOIN companies c ON c.id = t.company_id
-     WHERE ($1::text IS NULL OR t.status = $1)
+     WHERE ($1::uuid IS NULL OR t.user_id = $1)
+       AND ($2::text IS NULL OR t.status = $2)
+       AND ($3::uuid IS NULL OR t.company_id = $3)
      ORDER BY t.opened_at DESC`,
-    [status ?? null]
+    [userId, status ?? null, opts.companyId ?? null]
   );
 
   return Promise.all(rows.map((row) => evaluateThesis(toThesis(row))));
 }
 
 export async function openThesis(
+  userId: string,
   companyId: string,
   rationale: string | null,
   rules: Rule[]
 ): Promise<string> {
   const { rows } = await pool.query(
-    `INSERT INTO theses (company_id, rationale, invalidation_rules)
-     VALUES ($1, $2, $3) RETURNING id`,
-    [companyId, rationale, JSON.stringify(rules)]
+    `INSERT INTO theses (user_id, company_id, rationale, invalidation_rules)
+     VALUES ($1, $2, $3, $4) RETURNING id`,
+    [userId, companyId, rationale?.slice(0, 2000) ?? null, JSON.stringify(rules)]
   );
   return rows[0].id;
 }
 
 // An open thesis on the same company with exactly these rules, so adopting the
 // same committee twice does not leave two identical tripwires.
-export async function findOpenThesis(companyId: string, rules: Rule[]): Promise<string | null> {
+export async function findOpenThesis(userId: string, companyId: string, rules: Rule[]): Promise<string | null> {
   const { rows } = await pool.query(
     `SELECT id FROM theses
-     WHERE company_id = $1 AND status = 'open' AND invalidation_rules = $2::jsonb
+     WHERE user_id = $1 AND company_id = $2 AND status = 'open' AND invalidation_rules = $3::jsonb
      LIMIT 1`,
-    [companyId, JSON.stringify(rules)]
+    [userId, companyId, JSON.stringify(rules)]
   );
   return rows[0]?.id ?? null;
 }
 
-// Returns whether a thesis with that id existed.
-export async function setThesisStatus(id: string, status: Thesis["status"]): Promise<boolean> {
+// Returns whether a thesis with that id existed and belonged to this person.
+export async function setThesisStatus(userId: string, id: string, status: Thesis["status"]): Promise<boolean> {
   if (!isUuid(id)) return false;
-  const { rowCount } = await pool.query(`UPDATE theses SET status = $2 WHERE id = $1`, [id, status]);
+  const { rowCount } = await pool.query(`UPDATE theses SET status = $3 WHERE id = $1 AND user_id = $2`, [
+    id,
+    userId,
+    status,
+  ]);
   return (rowCount ?? 0) > 0;
 }
 
 export interface CheckSummary {
   checked: number;
-  invalidated: Array<{ thesisId: string; ticker: string; rule: Rule; actual: number }>;
+  invalidated: Array<{ thesisId: string; userId: string; ticker: string; rule: Rule; actual: number }>;
   unresolved: Array<{ ticker: string; metric: string }>;
 }
 
 // Run after new filings land. Only open theses are touched, and only the status
 // column changes — nothing here writes a number a person did not put there.
-export async function checkOpenTheses(): Promise<CheckSummary> {
-  const evaluations = await listTheses("open");
+// With a userId it checks that person's theses; without, everyone's.
+export async function checkOpenTheses(userId: string | null = null): Promise<CheckSummary> {
+  const evaluations = await listTheses(userId, "open");
   const summary: CheckSummary = { checked: evaluations.length, invalidated: [], unresolved: [] };
 
   for (const evaluation of evaluations) {
@@ -194,6 +210,7 @@ export async function checkOpenTheses(): Promise<CheckSummary> {
       } else if (check.breached) {
         summary.invalidated.push({
           thesisId: evaluation.thesis.id,
+          userId: evaluation.thesis.userId,
           ticker: evaluation.thesis.ticker,
           rule: check.rule,
           actual: check.actual,
@@ -202,9 +219,10 @@ export async function checkOpenTheses(): Promise<CheckSummary> {
     }
 
     if (evaluation.breached) {
-      await setThesisStatus(evaluation.thesis.id, "invalidated");
+      await setThesisStatus(evaluation.thesis.userId, evaluation.thesis.id, "invalidated");
       const crossed = evaluation.checks.filter((c) => c.breached);
       await addJournal({
+        userId: evaluation.thesis.userId,
         companyId: evaluation.thesis.companyId,
         kind: "thesis-invalidated",
         title: `Thesis on ${evaluation.thesis.ticker} no longer holds`,

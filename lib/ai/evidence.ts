@@ -1,6 +1,6 @@
 import Decimal from "decimal.js";
 import { pool } from "../db";
-import { ACCOUNT_ID } from "../constants";
+import type { Actor } from "../actor";
 import { getFundamentals, getPriceHistory, type CompanyRow } from "../company";
 import { getScores, latestMetrics } from "../scoring";
 import { getHeadlines } from "../dossier";
@@ -10,6 +10,7 @@ import { getPortfolio } from "../holdings";
 import { fetchChart } from "../quote";
 import { inputHash } from "../llm";
 import { capitalisationShares } from "../edgar";
+import { getSplits, splitFactor } from "../splits";
 
 /* ---------------------------------------------------------------------------
    The Capital Data Engine, as far as the committee is concerned: one evidence
@@ -201,7 +202,10 @@ class PackBuilder {
   }
 }
 
-export async function buildEvidence(company: CompanyRow): Promise<EvidencePack> {
+export async function buildEvidence(
+  company: CompanyRow,
+  actor: Pick<Actor, "userId" | "accountId">
+): Promise<EvidencePack> {
   const b = new PackBuilder();
   const inputs: EvidenceCoverage["inputs"] = [];
 
@@ -267,7 +271,7 @@ export async function buildEvidence(company: CompanyRow): Promise<EvidencePack> 
     // no annual periods — the coverage line above already says so
   }
 
-  /* ---- prices: stored bars first, Yahoo when the desk has none */
+  /* ---- prices: stored bars first, the market-data provider when the desk has none */
 
   const price = await priceSeries(company);
   inputs.push({ name: "price history", present: price.closes.length > 1 });
@@ -294,7 +298,17 @@ export async function buildEvidence(company: CompanyRow): Promise<EvidencePack> 
 
     /* ---- valuation, from that price and the latest annual figures */
 
-    for (const v of valuation(last.close, latestByMetric)) {
+    // Shares as filed for the period, restated for any split since, so they
+    // are on the same basis as the split-adjusted price.
+    const factor = latestPeriod
+      ? splitFactor((await getSplits([company.id])).get(company.id), latestPeriod).toNumber()
+      : 1;
+    const onPriceBasis = new Map(latestByMetric);
+    for (const key of ["shares_outstanding", "shares_diluted"]) {
+      const v = onPriceBasis.get(key);
+      if (v !== undefined) onPriceBasis.set(key, v * factor);
+    }
+    for (const v of valuation(last.close, onPriceBasis, factor)) {
       b.add({
         kind: "valuation",
         label: `${v.label} (price ${last.date}, fiscal year ending ${latestPeriod})`,
@@ -363,7 +377,7 @@ export async function buildEvidence(company: CompanyRow): Promise<EvidencePack> 
 
   /* ---- sourced research claims, each already matched against its source */
 
-  const note = await getResearchNote(company.id, company.ticker, company.name);
+  const note = await getResearchNote(actor.userId, company.id, company.ticker, company.name);
   let noteCount = 0;
   for (const field of RESEARCH_FIELDS) {
     for (const claim of note.fields[field].slice(0, 4)) {
@@ -381,7 +395,7 @@ export async function buildEvidence(company: CompanyRow): Promise<EvidencePack> 
 
   /* ---- theses already open on this company */
 
-  const theses = (await listTheses()).filter((t) => t.thesis.companyId === company.id);
+  const theses = await listTheses(actor.userId, undefined, { companyId: company.id });
   for (const t of theses) {
     b.add({
       kind: "thesis",
@@ -396,8 +410,8 @@ export async function buildEvidence(company: CompanyRow): Promise<EvidencePack> 
 
   /* ---- the position, if one is held */
 
-  try {
-    const { holdings } = await getPortfolio(ACCOUNT_ID);
+  {
+    const { holdings } = await getPortfolio(actor.accountId);
     const held = holdings.find((h) => h.companyId === company.id);
     if (held) {
       b.add({ kind: "position", label: "Weight in the portfolio", value: held.weight.toNumber(), unit: "ratio", source: { kind: "transactions", ref: "ledger" } });
@@ -412,8 +426,6 @@ export async function buildEvidence(company: CompanyRow): Promise<EvidencePack> 
         });
       }
     }
-  } catch {
-    // no ledger yet
   }
 
   /* ---- macro */
@@ -464,7 +476,7 @@ async function priceSeries(
     .map((b) => ({ date: b.date, close: Number(b.close) }));
 
   // A few stored bars are not a year of history, and a year that ended weeks ago
-  // is not today's price; in either case Yahoo is asked instead.
+  // is not today's price; in either case the market-data provider is asked instead.
   const lastStored = closes.at(-1)?.date;
   const fresh = lastStored !== undefined && Date.now() - Date.parse(lastStored) < STALE_AFTER_DAYS * 86_400_000;
   if (closes.length >= 60 && fresh) {
@@ -478,7 +490,7 @@ async function priceSeries(
       .map((b) => ({ date: b.date, close: b.close as number }));
     const newer = (live.at(-1)?.date ?? "") > (lastStored ?? "");
     if (live.length > closes.length || (newer && live.length >= 60)) {
-      return { closes: live, source: "yahoo", ref: "Yahoo Finance daily chart, 1 year" };
+      return { closes: live, source: chart.source, ref: `${chart.source} daily closes, 1 year` };
     }
   } catch {
     // unreachable — whatever is stored will have to do
@@ -542,7 +554,8 @@ export function priceStats(all: Close[]): PriceStats {
 
 export function valuation(
   price: number,
-  latest: Map<string, number>
+  latest: Map<string, number>,
+  splitRestatement = 1
 ): Array<{ label: string; value: number; unit: Unit }> {
   const out: Array<{ label: string; value: number; unit: Unit }> = [];
   const shares = capitalisationShares(latest);
@@ -553,7 +566,7 @@ export function valuation(
   out.push({
     label: `Market capitalisation, last close times ${
       latest.has("shares_outstanding") ? "shares outstanding at period end" : "diluted weighted shares"
-    }`,
+    }${splitRestatement !== 1 ? ` restated ×${splitRestatement} for splits since` : ""}`,
     value: marketCap.toNumber(),
     unit: "usd",
   });

@@ -1,3 +1,4 @@
+import { requirePageActor } from "@/lib/auth/current";
 import Link from "next/link";
 import { analyzeRisk, basisFrom, type RiskReport } from "@/lib/risk/engine";
 import { FACTORS } from "@/lib/risk/scenarios";
@@ -20,7 +21,8 @@ export default async function RiskPage({ searchParams }: PageProps<"/risk">) {
   const params = await searchParams;
   const basket = typeof params.basket === "string" ? params.basket : "";
   const source = typeof params.source === "string" ? params.source : null;
-  const report = await analyzeRisk(basisFrom({ basket, source }));
+  const { actor } = await requirePageActor();
+  const report = await analyzeRisk(actor, basisFrom({ basket, source }));
 
   return (
     <div>

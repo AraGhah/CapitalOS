@@ -1,10 +1,17 @@
 import { fetchArticles, searchName, type Article } from "./news";
 import { domainOf } from "./format";
 import { isWebUrl } from "./url";
+import { config } from "./config";
 
-// Five free, public discovery feeds. None needs a key, all of them go down
+// Free, public discovery feeds. None needs a key, all of them go down
 // sometimes, and each one reports its own outcome so the rail can say which was
 // unreachable rather than quietly showing fewer headlines.
+//
+// Which feeds run is NEWS_FEEDS. The default is the sources whose terms allow
+// this use: GDELT (an open research dataset), Hacker News' public Algolia API
+// and Google News' public RSS. Reddit's terms require its registered API for
+// programmatic access, and Yahoo's RSS is tied to Yahoo's data terms, so both
+// are opt-in for personal use and off by default.
 
 export type FeedId = "gdelt" | "google_news" | "yahoo_finance" | "hacker_news" | "reddit";
 
@@ -153,13 +160,17 @@ async function reddit(query: string): Promise<Article[]> {
 export async function scoutFeeds(ticker: string, name: string): Promise<FeedResult[]> {
   const plain = searchName(name) || ticker;
 
-  const jobs: Array<[FeedId, Promise<Article[]>]> = [
-    ["gdelt", fetchArticles(plain, { timespan: "7d", maxRecords: 75 })],
-    ["google_news", googleNews(`${plain} stock`)],
-    ["yahoo_finance", yahooFinance(ticker)],
-    ["hacker_news", hackerNews(plain)],
-    ["reddit", reddit(`${plain} ${ticker}`)],
+  const enabled = new Set<FeedId>(config().NEWS_FEEDS);
+  const all: Array<[FeedId, () => Promise<Article[]>]> = [
+    ["gdelt", () => fetchArticles(plain, { timespan: "7d", maxRecords: 75 })],
+    ["google_news", () => googleNews(`${plain} stock`)],
+    ["yahoo_finance", () => yahooFinance(ticker)],
+    ["hacker_news", () => hackerNews(plain)],
+    ["reddit", () => reddit(`${plain} ${ticker}`)],
   ];
+  const jobs: Array<[FeedId, Promise<Article[]>]> = all
+    .filter(([id]) => enabled.has(id))
+    .map(([id, run]) => [id, run()]);
 
   const settled = await Promise.allSettled(jobs.map(([, job]) => job));
 

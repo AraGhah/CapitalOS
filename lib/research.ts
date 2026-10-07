@@ -49,6 +49,7 @@ export interface AddResult {
 // that cannot be found in the source it cites, which is the failure the columns
 // cannot see.
 export async function addClaims(
+  userId: string,
   companyId: string,
   field: ResearchField,
   claims: Claim[]
@@ -111,13 +112,13 @@ export async function addClaims(
 
   for (const claim of accepted) {
     const { rowCount } = await pool.query(
-      `INSERT INTO research_notes (company_id, field, claim, source_id, snippet)
-       SELECT $1, $2, $3, $4, $5
+      `INSERT INTO research_notes (user_id, company_id, field, claim, source_id, snippet)
+       SELECT $6, $1, $2, $3, $4, $5
        WHERE NOT EXISTS (
          SELECT 1 FROM research_notes
-         WHERE company_id = $1 AND field = $2 AND claim = $3 AND source_id = $4
+         WHERE user_id = $6 AND company_id = $1 AND field = $2 AND claim = $3 AND source_id = $4
        )`,
-      [companyId, field, claim.text, claim.sourceId, claim.snippet]
+      [companyId, field, claim.text.slice(0, 2000), claim.sourceId, claim.snippet.slice(0, 4000), userId]
     );
     if (rowCount === 0) duplicates++;
     else inserted++;
@@ -138,7 +139,7 @@ export interface ResearchCoverage {
 // Coverage counts what was actually retrieved and how far the score components
 // disagree. Both are read off stored rows, which is the point: a model cannot
 // talk its way into a better number the way a self-reported confidence invites.
-export async function getCoverage(companyId: string): Promise<ResearchCoverage> {
+export async function getCoverage(userId: string, companyId: string): Promise<ResearchCoverage> {
   const { rows } = await pool.query(
     `SELECT
        (SELECT sector IS NOT NULL FROM companies WHERE id = $1) AS profile,
@@ -146,12 +147,12 @@ export async function getCoverage(companyId: string): Promise<ResearchCoverage> 
        EXISTS (SELECT 1 FROM scores WHERE company_id = $1) AS score,
        EXISTS (SELECT 1 FROM prices_daily WHERE company_id = $1) AS prices,
        EXISTS (SELECT 1 FROM filings WHERE company_id = $1) AS filings,
-       (SELECT count(DISTINCT field) FROM research_notes WHERE company_id = $1) AS fields_written,
+       (SELECT count(DISTINCT field) FROM research_notes WHERE company_id = $1 AND user_id = $2) AS fields_written,
        (SELECT count(*) FROM scores WHERE company_id = $1
           AND as_of = (SELECT max(as_of) FROM scores WHERE company_id = $1)) AS score_components,
        (SELECT max(percentile) - min(percentile) FROM scores WHERE company_id = $1
           AND as_of = (SELECT max(as_of) FROM scores WHERE company_id = $1)) AS score_spread`,
-    [companyId]
+    [companyId, userId]
   );
 
   const row = rows[0];
@@ -188,6 +189,7 @@ function emptyFields(): Record<ResearchField, StoredClaim[]> {
 }
 
 export async function getResearchNote(
+  userId: string,
   companyId: string,
   ticker: string,
   name: string
@@ -197,9 +199,9 @@ export async function getResearchNote(
             s.id AS source_id, s.kind, s.url, s.title, s.published_at, s.retrieved_at, s.raw_hash
      FROM research_notes rn
      JOIN sources s ON s.id = rn.source_id
-     WHERE rn.company_id = $1
+     WHERE rn.company_id = $1 AND rn.user_id = $2
      ORDER BY rn.field, rn.created_at`,
-    [companyId]
+    [companyId, userId]
   );
 
   const fields = emptyFields();
@@ -225,5 +227,5 @@ export async function getResearchNote(
     });
   }
 
-  return { companyId, ticker, name, fields, coverage: await getCoverage(companyId) };
+  return { companyId, ticker, name, fields, coverage: await getCoverage(userId, companyId) };
 }

@@ -1,29 +1,26 @@
 import "../lib/env";
-import { readFileSync } from "node:fs";
 import { pool } from "../lib/db";
+import { log } from "../lib/log";
+import { loadMigrations, migrate, pendingMigrations } from "../lib/migrate";
 
-// Every layer written with IF NOT EXISTS, in dependency order. schema.sql is not
-// here: it creates the base tables without guards and is applied once, by hand,
-// as the README says.
-const LAYERS = [
-  "schema-desk.sql",
-  "schema-consensus.sql",
-  "schema-lab.sql",
-  "schema-autopilot.sql",
-  "schema-hardening.sql",
-];
-
+// npm run migrate            apply every pending migration in migrations/
+// npm run migrate -- --status   list what is pending without applying it
 async function main() {
-  const only = process.argv[2];
-  for (const file of only ? [only] : LAYERS) {
-    await pool.query(readFileSync(file, "utf8"));
-    console.log(`${file} applied`);
+  if (process.argv.includes("--status")) {
+    const pending = await pendingMigrations(pool);
+    const all = loadMigrations();
+    console.log(`${all.length - pending.length} applied, ${pending.length} pending`);
+    for (const m of pending) console.log(`  pending ${m.version}_${m.name}`);
+    return;
   }
-  await pool.end();
+  const result = await migrate(pool, { log: (line) => console.log(line) });
+  console.log(`${result.applied.length} applied, ${result.skipped} already in place`);
 }
 
-main().catch(async (err) => {
-  console.error(err instanceof Error ? err.message : err);
-  await pool.end();
-  process.exit(1);
-});
+main()
+  .catch((err) => {
+    log.error({ err: { message: (err as Error).message } }, "migration failed");
+    console.error((err as Error).message);
+    process.exitCode = 1;
+  })
+  .finally(() => pool.end());

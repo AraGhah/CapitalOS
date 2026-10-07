@@ -8,6 +8,10 @@ import { TickerSearch } from "./components/TickerSearch";
 import { ThemeToggle, themeBootScript } from "./components/ThemeToggle";
 import { TickerTape } from "./components/TickerTape";
 import { DeskStatus } from "./components/DeskStatus";
+import { SignOut } from "./components/SignOut";
+import { currentUser } from "@/lib/auth/current";
+import { headers } from "next/headers";
+import { redirect } from "next/navigation";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -27,11 +31,32 @@ export const metadata: Metadata = {
 // The chrome reads the database on every request, so nothing here is prerendered.
 export const dynamic = "force-dynamic";
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  // The sign-in page renders without the desk's chrome: nothing about the
+  // desk is shown to someone who has not signed in.
+  const user = await currentUser().catch(() => null);
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
+  if (!user) {
+    // A cookie can be well signed and still expired or revoked: anything but
+    // the sign-in page goes back to it.
+    const path = (await headers()).get("x-pathname") ?? "/";
+    if (path !== "/login") redirect("/login");
+    return (
+      <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
+        <head>
+          <script nonce={nonce} dangerouslySetInnerHTML={{ __html: themeBootScript }} />
+        </head>
+        <body>
+          <main className="page auth-page">{children}</main>
+        </body>
+      </html>
+    );
+  }
+
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
       <head>
-        <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
+        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: themeBootScript }} />
       </head>
       <body>
         <header className="topbar">
@@ -45,11 +70,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           <div className="topbar-right">
             <TickerSearch />
             <ThemeToggle />
+            <SignOut email={user.email} />
           </div>
         </header>
 
         <Suspense fallback={null}>
-          <TickerTape />
+          <TickerTape actor={{ userId: user.userId, accountId: user.accountId }} />
         </Suspense>
 
         <div className="shell">

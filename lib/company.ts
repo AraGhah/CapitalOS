@@ -30,7 +30,7 @@ export interface CompanyRow {
 export async function findCompany(ticker: string): Promise<CompanyRow | null> {
   const { rows } = await pool.query(
     `SELECT id, ticker, name, cik, sector, industry, active
-     FROM companies WHERE upper(ticker) = upper($1)`,
+     FROM companies WHERE ticker = upper($1)`,
     [ticker.trim()]
   );
   return rows[0] ?? null;
@@ -175,12 +175,14 @@ export async function getPriceHistory(
     .reverse();
 }
 
-export async function getWatchlist() {
+export async function getWatchlist(userId: string) {
   const { rows } = await pool.query(
     `SELECT c.ticker, c.name, c.sector, w.added_at, w.note
      FROM watchlist w
      JOIN companies c ON c.id = w.company_id
-     ORDER BY c.ticker`
+     WHERE w.user_id = $1
+     ORDER BY c.ticker`,
+    [userId]
   );
   return rows.map((r) => ({
     ticker: r.ticker,
@@ -191,16 +193,21 @@ export async function getWatchlist() {
   }));
 }
 
-export async function addToWatchlist(companyId: string, note: string | null): Promise<void> {
+// A note is only replaced when one is given, so researching a ticker that is
+// already watched does not wipe the note written for it.
+export async function addToWatchlist(userId: string, companyId: string, note: string | null): Promise<void> {
   await pool.query(
-    `INSERT INTO watchlist (company_id, note) VALUES ($1, $2)
-     ON CONFLICT (company_id) DO UPDATE SET note = EXCLUDED.note`,
-    [companyId, note]
+    `INSERT INTO watchlist (user_id, company_id, note) VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, company_id) DO UPDATE SET note = COALESCE(EXCLUDED.note, watchlist.note)`,
+    [userId, companyId, note]
   );
 }
 
-export async function removeFromWatchlist(companyId: string): Promise<boolean> {
-  const { rowCount } = await pool.query(`DELETE FROM watchlist WHERE company_id = $1`, [companyId]);
+export async function removeFromWatchlist(userId: string, companyId: string): Promise<boolean> {
+  const { rowCount } = await pool.query(`DELETE FROM watchlist WHERE user_id = $1 AND company_id = $2`, [
+    userId,
+    companyId,
+  ]);
   return (rowCount ?? 0) > 0;
 }
 
@@ -232,29 +239,4 @@ export async function getMacroSeries(
   return rows
     .map((r) => ({ date: (r.date as Date).toISOString().slice(0, 10), value: r.value }))
     .reverse();
-}
-
-export async function getTransactions(
-  accountId: string,
-  opts: { ticker?: string; limit?: number } = {}
-) {
-  const { rows } = await pool.query(
-    `SELECT t.id, c.ticker, t.side, t.qty, t.price, t.fees, t.executed_at
-     FROM transactions t
-     JOIN companies c ON c.id = t.company_id
-     WHERE t.account_id = $1 AND ($2::text IS NULL OR upper(c.ticker) = upper($2))
-     ORDER BY t.executed_at DESC
-     LIMIT $3`,
-    [accountId, opts.ticker ?? null, opts.limit ?? 100]
-  );
-
-  return rows.map((r) => ({
-    id: r.id,
-    ticker: r.ticker,
-    side: r.side,
-    qty: r.qty,
-    price: r.price,
-    fees: r.fees,
-    executedAt: (r.executed_at as Date).toISOString(),
-  }));
 }

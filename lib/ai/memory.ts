@@ -33,6 +33,7 @@ export interface MemoryRow {
 }
 
 export async function remember(input: {
+  userId: string;
   companyId: string;
   runId: string;
   modelId: string | null;
@@ -50,8 +51,8 @@ export async function remember(input: {
   for (const r of rows) {
     await pool.query(
       `INSERT INTO ai_memory (company_id, run_id, model_id, kind, statement, metric, operator, value,
-                              baseline_period, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+                              baseline_period, status, user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         input.companyId,
         input.runId,
@@ -65,57 +66,56 @@ export async function remember(input: {
         // Without a rule there is nothing a filing can settle; it is kept for the
         // record but will never move out of this state.
         r.metric ? "pending" : "untestable",
+        input.userId,
       ]
     );
   }
   return rows.length;
 }
 
-export async function listMemory(opts: { companyId?: string; limit?: number } = {}): Promise<MemoryRow[]> {
-  try {
-    const { rows } = await pool.query(
-      `SELECT m.*, c.ticker FROM ai_memory m JOIN companies c ON c.id = m.company_id
-       WHERE ($1::uuid IS NULL OR m.company_id = $1)
-       ORDER BY m.created_at DESC LIMIT $2`,
-      [opts.companyId ?? null, opts.limit ?? 100]
-    );
-    const date = (d: Date | null) => (d ? d.toISOString().slice(0, 10) : null);
-    return rows.map((r) => ({
-      id: r.id,
-      ticker: r.ticker,
-      runId: r.run_id,
-      createdAt: (r.created_at as Date).toISOString(),
-      kind: r.kind,
-      statement: r.statement,
-      metric: r.metric,
-      operator: r.operator,
-      value: r.value === null ? null : Number(r.value),
-      baselinePeriod: date(r.baseline_period),
-      status: r.status,
-      checkedAt: r.checked_at ? (r.checked_at as Date).toISOString() : null,
-      checkedPeriod: date(r.checked_period),
-      actual: r.actual === null ? null : Number(r.actual),
-    }));
-  } catch {
-    return [];
-  }
+export async function listMemory(userId: string, opts: { companyId?: string; limit?: number } = {}): Promise<MemoryRow[]> {
+  const { rows } = await pool.query(
+    `SELECT m.*, c.ticker FROM ai_memory m JOIN companies c ON c.id = m.company_id
+     WHERE m.user_id = $1 AND ($2::uuid IS NULL OR m.company_id = $2)
+     ORDER BY m.created_at DESC LIMIT $3`,
+    [userId, opts.companyId ?? null, opts.limit ?? 100]
+  );
+  const date = (d: Date | null) => (d ? d.toISOString().slice(0, 10) : null);
+  return rows.map((r) => ({
+    id: r.id,
+    ticker: r.ticker,
+    runId: r.run_id,
+    createdAt: (r.created_at as Date).toISOString(),
+    kind: r.kind,
+    statement: r.statement,
+    metric: r.metric,
+    operator: r.operator,
+    value: r.value === null ? null : Number(r.value),
+    baselinePeriod: date(r.baseline_period),
+    status: r.status,
+    checkedAt: r.checked_at ? (r.checked_at as Date).toISOString() : null,
+    checkedPeriod: date(r.checked_period),
+    actual: r.actual === null ? null : Number(r.actual),
+  }));
 }
 
 export interface MemoryCheck {
   checked: number;
-  settled: Array<{ ticker: string; statement: string; status: "supported" | "refuted"; actual: number }>;
+  settled: Array<{ userId: string; ticker: string; statement: string; status: "supported" | "refuted"; actual: number }>;
   waiting: number;
 }
 
 // An assumption is supported when its condition holds on the newer period. An
 // invalidation rule is the opposite — its condition is the breaking condition,
 // the same convention the theses table uses — so it is "refuted" (the thesis it
-// guarded broke) when the condition holds.
-export async function checkMemory(): Promise<MemoryCheck> {
+// guarded broke) when the condition holds. With a userId it settles that
+// person's assumptions; without, everyone's.
+export async function checkMemory(userId: string | null = null): Promise<MemoryCheck> {
   const { rows } = await pool.query(
-    `SELECT m.id, m.company_id, c.ticker, m.kind, m.statement, m.metric, m.operator, m.value, m.baseline_period
+    `SELECT m.id, m.user_id, m.company_id, c.ticker, m.kind, m.statement, m.metric, m.operator, m.value, m.baseline_period
      FROM ai_memory m JOIN companies c ON c.id = m.company_id
-     WHERE m.status = 'pending' AND m.metric IS NOT NULL`
+     WHERE m.status = 'pending' AND m.metric IS NOT NULL AND ($1::uuid IS NULL OR m.user_id = $1)`,
+    [userId]
   );
 
   const result: MemoryCheck = { checked: rows.length, settled: [], waiting: 0 };
@@ -153,6 +153,7 @@ export async function checkMemory(): Promise<MemoryCheck> {
       [row.id, status, metrics.periodEnd, actual]
     );
     await addJournal({
+      userId: row.user_id,
       companyId: row.company_id,
       kind: status === "supported" ? "memory-supported" : "memory-refuted",
       title: `${row.kind === "assumption" ? "Assumption" : "Thesis condition"} ${status === "supported" ? "held" : "broke"}: ${row.statement}`,
@@ -160,7 +161,7 @@ export async function checkMemory(): Promise<MemoryCheck> {
       refId: row.id,
     });
 
-    result.settled.push({ ticker: row.ticker, statement: row.statement, status, actual });
+    result.settled.push({ userId: row.user_id, ticker: row.ticker, statement: row.statement, status, actual });
   }
 
   return result;
@@ -168,19 +169,16 @@ export async function checkMemory(): Promise<MemoryCheck> {
 
 // What share of each model's testable assumptions held — the long-run record
 // the plan calls AI memory, graded by later filings rather than by any model.
+// Counts across every person's committees: a record of the models, not of anyone's research.
 export async function memoryRecordByModel(): Promise<Array<{ modelId: string; supported: number; refuted: number; pending: number }>> {
-  try {
-    const { rows } = await pool.query(
-      `SELECT model_id,
-              count(*) FILTER (WHERE status = 'supported')::int AS supported,
-              count(*) FILTER (WHERE status = 'refuted')::int AS refuted,
-              count(*) FILTER (WHERE status = 'pending')::int AS pending
-       FROM ai_memory
-       WHERE metric IS NOT NULL AND model_id IS NOT NULL
-       GROUP BY model_id`
-    );
-    return rows.map((r) => ({ modelId: r.model_id, supported: r.supported, refuted: r.refuted, pending: r.pending }));
-  } catch {
-    return [];
-  }
+  const { rows } = await pool.query(
+    `SELECT model_id,
+            count(*) FILTER (WHERE status = 'supported')::int AS supported,
+            count(*) FILTER (WHERE status = 'refuted')::int AS refuted,
+            count(*) FILTER (WHERE status = 'pending')::int AS pending
+     FROM ai_memory
+     WHERE metric IS NOT NULL AND model_id IS NOT NULL
+     GROUP BY model_id`
+  );
+  return rows.map((r) => ({ modelId: r.model_id, supported: r.supported, refuted: r.refuted, pending: r.pending }));
 }

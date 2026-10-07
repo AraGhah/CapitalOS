@@ -4,6 +4,8 @@ import { callModel } from "../ai/providers";
 import { renderEvidence, type EvidenceItem, type EvidencePack } from "../ai/evidence";
 import { unsupportedFigures } from "../ai/factcheck";
 import type { MarketOverview } from "./overview";
+import type { Actor } from "../actor";
+import { assertWithinSpend, recordModelCall } from "../ai/metering";
 
 /* ---------------------------------------------------------------------------
    The market brief: a model explains what the overview's numbers show. It is
@@ -29,7 +31,7 @@ const cache = new Map<string, { at: number; brief: MarketBrief }>();
 export function overviewPack(o: MarketOverview): EvidencePack {
   const items: EvidenceItem[] = [];
   const add = (item: Omit<EvidenceItem, "id">) => items.push({ id: `E${items.length + 1}`, ...item });
-  const src = { kind: "computed", ref: "Yahoo Finance daily closes, computed by lib/market" };
+  const src = { kind: "computed", ref: "provider daily closes, computed by lib/market" };
 
   for (const a of o.assets) {
     if (!a.m) continue;
@@ -85,7 +87,11 @@ RULES
 EXPECTED OUTPUT
 {"headline": "one line, under 100 characters", "summary": "3-5 sentences", "watch": ["2-4 things worth watching, one sentence each"]}`;
 
-export async function writeBrief(o: MarketOverview, force = false): Promise<MarketBrief> {
+export async function writeBrief(
+  actor: Pick<Actor, "userId">,
+  o: MarketOverview,
+  force = false
+): Promise<MarketBrief> {
   const pack = overviewPack(o);
   const hit = cache.get(pack.hash);
   if (!force && hit && Date.now() - hit.at < CACHE_MS) return hit.brief;
@@ -94,12 +100,21 @@ export async function writeBrief(o: MarketOverview, force = false): Promise<Mark
   if (models.length === 0) throw new Error("no model is configured — add ANTHROPIC_API_KEY to .env.local");
   const model = pickForStage("synthesizer", models, await stageRecords());
 
-  const result = await callModel(model, {
-    evidence: renderEvidence(pack),
-    instructions: INSTRUCTIONS,
-    user: "Write today's market brief.",
-    maxTokens: 1200,
-  });
+  await assertWithinSpend(actor.userId);
+  const meta = { userId: actor.userId, purpose: "market-brief", stage: "synthesizer", agent: "Market strategist", modelId: model.id, provider: model.provider, model: model.model };
+  let result;
+  try {
+    result = await callModel(model, {
+      evidence: renderEvidence(pack),
+      instructions: INSTRUCTIONS,
+      user: "Write today's market brief.",
+      maxTokens: 1200,
+    });
+  } catch (err) {
+    await recordModelCall({ ...meta, error: (err as Error).message });
+    throw err;
+  }
+  await recordModelCall({ ...meta, ...result, rawText: null });
   const raw = extractJson<{ headline?: string; summary?: string; watch?: unknown }>(result.text);
   const headline = typeof raw.headline === "string" ? raw.headline.trim() : "";
   const summary = typeof raw.summary === "string" ? raw.summary.trim() : "";

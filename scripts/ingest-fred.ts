@@ -1,4 +1,5 @@
 import "../lib/env";
+import { secUserAgent } from "../lib/config";
 import { pool } from "../lib/db";
 
 // Rates, inflation, growth and the dollar — enough context to read a company
@@ -40,7 +41,7 @@ function parseCsv(csv: string): Observation[] {
 
 async function fetchSeries(seriesId: string): Promise<Observation[]> {
   const res = await fetch(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${seriesId}`, {
-    headers: { "User-Agent": process.env.SEC_USER_AGENT ?? "CapitalOS contact@example.com" },
+    headers: { "User-Agent": secUserAgent() },
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 

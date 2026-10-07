@@ -1,5 +1,5 @@
 import { pool } from "./db";
-import { ACCOUNT_ID } from "./constants";
+import type { Actor } from "./actor";
 import { domainOf } from "./format";
 
 // Everything on this page is read straight out of the tables the ingest scripts
@@ -20,17 +20,17 @@ const SPARK_BARS = 30;
 // One query for every ticker worth showing — held or watched — with the last
 // month of closes attached so each row can draw its own sparkline without a
 // second round trip.
-export async function getTape(accountId: string = ACCOUNT_ID): Promise<TapeRow[]> {
+export async function getTape(actor: Pick<Actor, "userId" | "accountId">): Promise<TapeRow[]> {
   const { rows } = await pool.query(
     `WITH tracked AS (
        SELECT c.id, c.ticker, c.name,
               EXISTS (SELECT 1 FROM transactions t
-                      WHERE t.company_id = c.id AND t.account_id = $1) AS held,
-              EXISTS (SELECT 1 FROM watchlist w WHERE w.company_id = c.id) AS watched
+                      WHERE t.company_id = c.id AND t.account_id = $1 AND t.voided_at IS NULL) AS held,
+              EXISTS (SELECT 1 FROM watchlist w WHERE w.company_id = c.id AND w.user_id = $3) AS watched
        FROM companies c
        WHERE EXISTS (SELECT 1 FROM transactions t
-                     WHERE t.company_id = c.id AND t.account_id = $1)
-          OR EXISTS (SELECT 1 FROM watchlist w WHERE w.company_id = c.id)
+                     WHERE t.company_id = c.id AND t.account_id = $1 AND t.voided_at IS NULL)
+          OR EXISTS (SELECT 1 FROM watchlist w WHERE w.company_id = c.id AND w.user_id = $3)
      ),
      recent AS (
        SELECT p.company_id, p.date, p.close,
@@ -44,7 +44,7 @@ export async function getTape(accountId: string = ACCOUNT_ID): Promise<TapeRow[]
              FROM recent r WHERE r.company_id = t.id AND r.rn <= $2) AS closes
      FROM tracked t
      ORDER BY t.ticker`,
-    [accountId, SPARK_BARS]
+    [actor.accountId, SPARK_BARS, actor.userId]
   );
 
   return rows.map((r) => {
@@ -144,12 +144,13 @@ export interface PipelineStage {
 
 // Where the desk's own work stops. Each stage is a table the previous one feeds,
 // so the first empty stage is the next script to run.
-export async function getPipeline(): Promise<PipelineStage[]> {
+export async function getPipeline(userId: string): Promise<PipelineStage[]> {
   const { rows } = await pool.query(
     `SELECT (SELECT count(*) FROM filings)::int        AS filings,
             (SELECT count(*) FROM fundamentals)::int   AS figures,
             (SELECT count(*) FROM scores)::int         AS scores,
-            (SELECT count(*) FROM research_notes)::int AS claims`
+            (SELECT count(*) FROM research_notes WHERE user_id = $1)::int AS claims`,
+    [userId]
   );
 
   const r = rows[0];

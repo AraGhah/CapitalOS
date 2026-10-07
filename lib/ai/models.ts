@@ -1,6 +1,8 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 import { pool } from "../db";
+import { config } from "../config";
 
 /* ---------------------------------------------------------------------------
    The model registry.
@@ -22,18 +24,40 @@ export interface ProviderConfig {
   keyEnv: string;
   maxTokensParam?: "max_tokens" | "max_completion_tokens";
   jsonMode?: boolean;
+  requestsPerMinute?: number;
 }
 
-interface ModelEntry {
-  id: string;
-  provider: string;
-  model?: string;
-  modelEnv?: string;
-  label: string;
-  tier: Tier;
-  priceIn?: number | null;
-  priceOut?: number | null;
-}
+const Price = z.number().min(0).nullable().optional();
+
+const ModelEntrySchema = z.object({
+  id: z.string().min(1),
+  provider: z.string().min(1),
+  model: z.string().min(1).optional(),
+  modelEnv: z.string().min(1).optional(),
+  label: z.string().min(1),
+  tier: z.enum(["fast", "standard", "frontier"]),
+  priceIn: Price,
+  priceOut: Price,
+  priceCacheRead: Price,
+  priceCacheWrite: Price,
+});
+
+const ProviderSchema = z.object({
+  kind: z.enum(["anthropic", "openai"]),
+  baseUrl: z.string().url().optional(),
+  keyEnv: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  maxTokensParam: z.enum(["max_tokens", "max_completion_tokens"]).optional(),
+  jsonMode: z.boolean().optional(),
+  requestsPerMinute: z.number().int().positive().optional(),
+});
+
+const RegistrySchema = z.object({
+  pricesAsOf: z.string().optional(),
+  providers: z.record(z.string(), ProviderSchema),
+  models: z.array(ModelEntrySchema).min(1),
+});
+
+type ModelEntry = z.infer<typeof ModelEntrySchema>;
 
 export interface ModelSpec {
   id: string;
@@ -44,6 +68,8 @@ export interface ModelSpec {
   tier: Tier;
   priceIn: number | null;
   priceOut: number | null;
+  priceCacheRead: number | null;
+  priceCacheWrite: number | null;
 }
 
 export interface RegistryRow {
@@ -56,6 +82,8 @@ export interface RegistryRow {
   available: boolean;
   missing: string | null;
   priced: boolean;
+  priceIn: number | null;
+  priceOut: number | null;
 }
 
 interface Registry {
@@ -63,10 +91,25 @@ interface Registry {
   models: ModelEntry[];
 }
 
-// Read on every call, like weights.json, so editing the line-up needs no rebuild.
-function loadRegistry(): Registry {
-  const raw = readFileSync(join(process.cwd(), "models.json"), "utf8");
-  return JSON.parse(raw) as Registry;
+// Validated when read, so a typo in models.json is a clear error rather than a
+// seat that silently never answers. Re-read only when the file changes, so
+// editing the line-up still needs no rebuild, without a synchronous file read
+// on every model call.
+let registryCache: { mtimeMs: number; registry: Registry } | null = null;
+
+export function loadRegistry(): Registry {
+  const path = join(process.cwd(), "models.json");
+  const mtimeMs = statSync(path).mtimeMs;
+  if (registryCache && registryCache.mtimeMs === mtimeMs) return registryCache.registry;
+  const parsed = RegistrySchema.safeParse(JSON.parse(readFileSync(path, "utf8")));
+  if (!parsed.success) {
+    throw new Error(`models.json is invalid: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
+  }
+  for (const m of parsed.data.models) {
+    if (!parsed.data.providers[m.provider]) throw new Error(`models.json: model "${m.id}" names unknown provider "${m.provider}"`);
+  }
+  registryCache = { mtimeMs, registry: parsed.data as Registry };
+  return registryCache.registry;
 }
 
 function resolveModel(entry: ModelEntry): string | null {
@@ -97,6 +140,8 @@ export function listRegistry(): RegistryRow[] {
       available: missing === null,
       missing,
       priced: typeof entry.priceIn === "number" && typeof entry.priceOut === "number",
+      priceIn: entry.priceIn ?? null,
+      priceOut: entry.priceOut ?? null,
     };
   });
 }
@@ -119,14 +164,46 @@ export function availableModels(): ModelSpec[] {
       tier: entry.tier,
       priceIn: typeof entry.priceIn === "number" ? entry.priceIn : null,
       priceOut: typeof entry.priceOut === "number" ? entry.priceOut : null,
+      priceCacheRead: typeof entry.priceCacheRead === "number" ? entry.priceCacheRead : null,
+      priceCacheWrite: typeof entry.priceCacheWrite === "number" ? entry.priceCacheWrite : null,
     });
   }
   return out;
 }
 
-export function costOf(spec: ModelSpec, inputTokens: number, outputTokens: number): number | null {
-  if (spec.priceIn === null || spec.priceOut === null) return null;
-  return (inputTokens * spec.priceIn + outputTokens * spec.priceOut) / 1_000_000;
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  cacheWriteTokens: number;
+}
+
+// What a call cost, in dollars. Cache reads and writes are priced at their own
+// rates when the registry has them (a read is a tenth of input, a write a
+// quarter more), otherwise as plain input. A model with no price at all is
+// charged UNPRICED_MODEL_USD_PER_MTOK on every token, and the cost is marked
+// estimated: an unpriced model is never free against the budget.
+export function costOf(spec: ModelSpec, usage: TokenUsage): { usd: number; estimated: boolean } {
+  if (spec.priceIn === null || spec.priceOut === null) {
+    const rate = config().UNPRICED_MODEL_USD_PER_MTOK;
+    const tokens = usage.inputTokens + usage.outputTokens + usage.cachedTokens + usage.cacheWriteTokens;
+    return { usd: (tokens * rate) / 1_000_000, estimated: true };
+  }
+  const read = spec.priceCacheRead ?? spec.priceIn;
+  const write = spec.priceCacheWrite ?? spec.priceIn;
+  const usd =
+    (usage.inputTokens * spec.priceIn +
+      usage.outputTokens * spec.priceOut +
+      usage.cachedTokens * read +
+      usage.cacheWriteTokens * write) /
+    1_000_000;
+  return { usd, estimated: false };
+}
+
+// The spec for an Anthropic model by its model id, for calls made outside the
+// committee (the copilot, the analyst, the strategist), so they are priced too.
+export function specForModel(provider: string, model: string): ModelSpec | null {
+  return availableModels().find((m) => m.provider === provider && m.model === model) ?? null;
 }
 
 /* ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 import "../lib/env";
+import { LEGACY_ACCOUNT_ID, LEGACY_OWNER_ID } from "../lib/actor";
 import assert from "node:assert/strict";
 import { pool } from "../lib/db";
 import {
@@ -61,7 +62,7 @@ function unit() {
 }
 
 async function live(text: string) {
-  const report = await analyzeRisk({ kind: "custom", text });
+  const report = await analyzeRisk({ userId: LEGACY_OWNER_ID, accountId: LEGACY_ACCOUNT_ID }, { kind: "custom", text });
   const pct = (x: number | null) => (x === null ? "—" : `${(x * 100).toFixed(1)}%`);
 
   console.log(`\n${report.label}: ${text}`);

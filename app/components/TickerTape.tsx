@@ -1,15 +1,16 @@
 import Link from "next/link";
 import { getTape, type TapeRow } from "@/lib/desk";
+import type { Actor } from "@/lib/actor";
 
 // The list is rendered twice inside one track so the marquee can loop from 0 to
 // -50% without ever showing a gap.
-export async function TickerTape() {
+export async function TickerTape({ actor }: { actor: Pick<Actor, "userId" | "accountId"> }) {
   let rows: TapeRow[] = [];
   try {
-    rows = await getTape();
+    rows = await getTape(actor);
   } catch {
-    // No database reachable yet — the tape is decoration, so it stays quiet
-    // rather than taking the whole page down with it.
+    // The tape is decoration; a failed read stays quiet rather than taking the
+    // whole page down with it.
     return null;
   }
 

@@ -1,5 +1,5 @@
 import { pool } from "../db";
-import { ACCOUNT_ID } from "../constants";
+import type { Actor } from "../actor";
 import { getPortfolio } from "../holdings";
 import { findCompany, getWatchlist } from "../company";
 import { aligned, loadBars, type Loaded } from "../market/bars";
@@ -119,9 +119,12 @@ export function parseBasket(text: string): { lines: Array<{ ticker: string; weig
   return { lines, errors };
 }
 
-export async function resolveBasket(basis: Basis): Promise<{ label: string; lines: BasketLine[]; warnings: string[] }> {
+export async function resolveBasket(
+  actor: Pick<Actor, "userId" | "accountId">,
+  basis: Basis
+): Promise<{ label: string; lines: BasketLine[]; warnings: string[] }> {
   if (basis.kind === "holdings") {
-    const { holdings } = await getPortfolio(ACCOUNT_ID);
+    const { holdings } = await getPortfolio(actor.accountId);
     return {
       label: "Open positions",
       lines: holdings.map((h) => ({ ticker: h.ticker, weight: h.weight.toNumber(), marketValue: h.marketValue.toNumber() })),
@@ -129,7 +132,7 @@ export async function resolveBasket(basis: Basis): Promise<{ label: string; line
     };
   }
   if (basis.kind === "watchlist") {
-    const watched = await getWatchlist();
+    const watched = await getWatchlist(actor.userId);
     return {
       label: "Watchlist, equal weight",
       lines: watched.map((w) => ({ ticker: w.ticker, weight: 1 / watched.length, marketValue: null })),
@@ -153,8 +156,8 @@ const EXPOSED_BETA = 0.3;
 // without moving the price much. A convention, stated on the page.
 const PARTICIPATION = 0.1;
 
-export async function analyzeRisk(basis: Basis): Promise<RiskReport> {
-  const resolved = await resolveBasket(basis);
+export async function analyzeRisk(actor: Pick<Actor, "userId" | "accountId">, basis: Basis): Promise<RiskReport> {
+  const resolved = await resolveBasket(actor, basis);
   const warnings = [...resolved.warnings];
   const empty = emptyReport(basis.kind, resolved.label, warnings);
   if (resolved.lines.length === 0) return empty;

@@ -1,3 +1,6 @@
+import { requirePageActor } from "@/lib/auth/current";
+import { config } from "@/lib/config";
+import { spentToday } from "@/lib/ai/metering";
 import {
   MIN_GRADED_RUNS,
   availableModels,
@@ -24,16 +27,19 @@ const STAGES: Array<{ id: Stage; label: string }> = [
 ];
 
 export default async function AiPage() {
+  const { actor } = await requirePageActor();
   const registry = listRegistry();
   const models = availableModels();
   const [records, performance, spend, memory] = await Promise.all([
     stageRecords(),
     modelPerformance(),
-    spendToday(),
+    spendToday(actor.userId),
     memoryRecordByModel(),
   ]);
   const labelOf = new Map(registry.map((m) => [m.id, m.label]));
-  const budget = Number(process.env.DAILY_CONSENSUS_BUDGET ?? 12);
+  const budget = config().DAILY_CONSENSUS_BUDGET;
+  const spendLimit = config().DAILY_SPEND_USD_LIMIT;
+  const spentAll = await spentToday(actor.userId);
 
   return (
     <div>
@@ -68,8 +74,11 @@ export default async function AiPage() {
         </div>
         <div className="tile">
           <span className="label">Spend today</span>
-          <div className="value">{spend.costUsd === null ? "—" : `$${spend.costUsd.toFixed(2)}`}</div>
-          <div className="foot">{spend.costUsd === null ? "set prices in models.json" : "priced calls only"}</div>
+          <div className="value">
+            ${spentAll.toFixed(2)}
+            <span style={{ color: "var(--faint)" }}>/${spendLimit.toFixed(0)}</span>
+          </div>
+          <div className="foot">every model call today; committees ${(spend.costUsd ?? 0).toFixed(2)}</div>
         </div>
       </div>
 

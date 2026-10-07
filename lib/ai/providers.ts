@@ -1,5 +1,5 @@
-import { takeSlot } from "../llm";
 import { fetchWithRetry, readJson } from "../http";
+import { gated } from "./gate";
 import { costOf, type ModelSpec } from "./models";
 
 /* ---------------------------------------------------------------------------
@@ -27,46 +27,39 @@ export interface ModelRequest {
 
 export interface ModelResult {
   text: string;
+  // uncached input; cache reads and writes are counted separately
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
+  cacheWriteTokens: number;
   latencyMs: number;
-  costUsd: number | null;
+  costUsd: number;
+  // true when the model has no listed price and the fallback rate was used
+  costEstimated: boolean;
 }
 
 const TIMEOUT_MS = 180_000;
-
-// Providers other than Anthropic get a gentler spacing of their own; each has its
-// own account limit, so one provider's queue never slows another's.
-const OTHER_GAP_MS = 1_000;
-const nextSlotByProvider = new Map<string, number>();
-
-async function providerSlot(provider: string): Promise<void> {
-  if (provider === "anthropic") return takeSlot();
-  const now = Date.now();
-  const at = Math.max(now, nextSlotByProvider.get(provider) ?? 0);
-  nextSlotByProvider.set(provider, at + OTHER_GAP_MS);
-  if (at > now) await new Promise((r) => setTimeout(r, at - now));
-}
 
 export async function callModel(spec: ModelSpec, req: ModelRequest): Promise<ModelResult> {
   const apiKey = process.env[spec.providerConfig.keyEnv]?.trim();
   if (!apiKey) throw new Error(`${spec.providerConfig.keyEnv} is not set`);
 
-  await providerSlot(spec.provider);
-  const started = Date.now();
+  // Each provider has its own account limit, shared by every process; one
+  // provider's queue never slows another's.
+  let started = 0;
+  const usage = await gated(spec.provider, () => {
+    started = Date.now();
+    return spec.providerConfig.kind === "anthropic"
+      ? callAnthropic(spec, apiKey, req)
+      : callOpenAiCompatible(spec, apiKey, req);
+  });
 
-  const usage =
-    spec.providerConfig.kind === "anthropic"
-      ? await callAnthropic(spec, apiKey, req)
-      : await callOpenAiCompatible(spec, apiKey, req);
-
+  const cost = costOf(spec, usage);
   return {
     ...usage,
     latencyMs: Date.now() - started,
-    // Cached input is still input; pricing it at the full rate overstates the
-    // cost slightly, which is the safer direction for a budget to err in.
-    costUsd: costOf(spec, usage.inputTokens + usage.cachedTokens, usage.outputTokens),
+    costUsd: cost.usd,
+    costEstimated: cost.estimated,
   };
 }
 
@@ -87,7 +80,7 @@ async function callAnthropic(
   spec: ModelSpec,
   apiKey: string,
   req: ModelRequest
-): Promise<Omit<ModelResult, "latencyMs" | "costUsd">> {
+): Promise<Omit<ModelResult, "latencyMs" | "costUsd" | "costEstimated">> {
   const res = await fetchWithRetry("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -118,9 +111,10 @@ async function callAnthropic(
       .map((b) => b.text)
       .join("\n")
       .trim(),
-    inputTokens: (body.usage?.input_tokens ?? 0) + (body.usage?.cache_creation_input_tokens ?? 0),
+    inputTokens: body.usage?.input_tokens ?? 0,
     outputTokens: body.usage?.output_tokens ?? 0,
     cachedTokens: body.usage?.cache_read_input_tokens ?? 0,
+    cacheWriteTokens: body.usage?.cache_creation_input_tokens ?? 0,
   };
 }
 
@@ -140,7 +134,7 @@ async function callOpenAiCompatible(
   spec: ModelSpec,
   apiKey: string,
   req: ModelRequest
-): Promise<Omit<ModelResult, "latencyMs" | "costUsd">> {
+): Promise<Omit<ModelResult, "latencyMs" | "costUsd" | "costEstimated">> {
   const config = spec.providerConfig;
   const base = (config.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
 
@@ -175,5 +169,6 @@ async function callOpenAiCompatible(
     inputTokens: Math.max(0, (body.usage?.prompt_tokens ?? 0) - cached),
     outputTokens: body.usage?.completion_tokens ?? 0,
     cachedTokens: cached,
+    cacheWriteTokens: 0,
   };
 }

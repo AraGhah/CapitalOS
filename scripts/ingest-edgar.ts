@@ -141,7 +141,8 @@ async function insertFundamentals(companyId: string, facts: ParsedFact[], filing
     `INSERT INTO fundamentals (company_id, period_end, fiscal_period, metric, value, filing_id)
      SELECT $1, period_end::date, fiscal_period, metric, value, filing_id
      FROM unnest($2::text[], $3::text[], $4::text[], $5::numeric[], $6::uuid[])
-       AS t(period_end, fiscal_period, metric, value, filing_id)`,
+       AS t(period_end, fiscal_period, metric, value, filing_id)
+     ON CONFLICT DO NOTHING`,
     [
       companyId,
       fresh.map((f) => f.periodEnd),

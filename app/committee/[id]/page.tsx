@@ -1,3 +1,4 @@
+import { requirePageActor } from "@/lib/auth/current";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getRun } from "@/lib/ai/store";
@@ -7,7 +8,8 @@ export const dynamic = "force-dynamic";
 
 export default async function CommitteeRunPage({ params }: PageProps<"/committee/[id]">) {
   const { id } = await params;
-  const run = await getRun(id).catch(() => null);
+  const { actor } = await requirePageActor();
+  const run = await getRun(actor.userId, id);
   if (!run) notFound();
 
   const { summary, report } = run;

@@ -1,8 +1,9 @@
 import { mkdir, readFile, stat, writeFile } from "fs/promises";
 import { join } from "path";
 
-// SEC rejects requests that don't identify the caller with a contact address.
-const USER_AGENT = process.env.SEC_USER_AGENT ?? "CapitalOS contact@example.com";
+import { secUserAgent } from "./config";
+import { take, UPSTREAM } from "./ratelimit";
+
 export const CACHE_DIR = join(process.cwd(), ".cache", "edgar");
 const TIMEOUT_MS = 30_000;
 
@@ -13,21 +14,12 @@ const TIMEOUT_MS = 30_000;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const FOREVER = Number.POSITIVE_INFINITY;
 
-// SEC allows 10 requests/second; one every 120ms stays comfortably under it.
-// Requests take turns on a chain rather than each reading a shared timestamp,
-// which concurrent callers would all read before any of them updated it.
-const GAP_MS = 120;
-let queue: Promise<void> = Promise.resolve();
-
-function throttle(): Promise<void> {
-  const turn = queue.then(() => new Promise<void>((r) => setTimeout(r, GAP_MS)));
-  queue = turn.catch(() => undefined);
-  return queue;
-}
-
+// SEC allows 10 requests a second per client — the whole deployment, not one
+// process — so the allowance is a bucket every process draws from. SEC also
+// requires a real contact in the User-Agent; there is no placeholder default.
 async function fetchSec(url: string): Promise<Response> {
-  await throttle();
-  const res = await fetch(url, { headers: { "User-Agent": USER_AGENT }, signal: AbortSignal.timeout(TIMEOUT_MS) });
+  await take(UPSTREAM.sec);
+  const res = await fetch(url, { headers: { "User-Agent": secUserAgent() }, signal: AbortSignal.timeout(TIMEOUT_MS) });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${url}`);
   return res;
 }

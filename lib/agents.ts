@@ -9,7 +9,7 @@ import {
   type Verdict,
 } from "./dossier";
 import { summarize, tagByLexicon, type Sentiment, type SentimentSummary } from "./sentiment";
-import { completeJson, hasModel, inputHash, MODEL, NoModelError } from "./llm";
+import { completeJson, hasModel, inputHash, modelName, NoModelError } from "./llm";
 import { latestMetrics } from "./scoring";
 import type { CompanyRow } from "./company";
 
@@ -86,16 +86,16 @@ const TAG_BATCH = 40;
 
 // Tagging happens in batches so one pipeline run costs a handful of requests
 // rather than one per headline.
-export async function analyst(company: CompanyRow): Promise<AnalystResult> {
+export async function analyst(company: CompanyRow, userId: string): Promise<AnalystResult> {
   const untagged = await getUntagged(company.id, WINDOW);
   const useModel = hasModel();
-  const provider = useModel ? MODEL : "lexicon";
+  const provider = useModel ? modelName() : "lexicon";
 
   let tagged = 0;
 
   for (let i = 0; i < untagged.length; i += TAG_BATCH) {
     const batch = untagged.slice(i, i + TAG_BATCH);
-    const tags = useModel ? await tagWithModel(batch) : batch.map((h) => tagByLexicon(h.title));
+    const tags = useModel ? await tagWithModel(batch, userId) : batch.map((h) => tagByLexicon(h.title));
 
     tagged += await saveTags(
       batch.map((headline, j) => ({ id: headline.id, sentiment: tags[j] })),
@@ -111,13 +111,14 @@ export async function analyst(company: CompanyRow): Promise<AnalystResult> {
   return { sentiment, tagged, provider, headlines };
 }
 
-async function tagWithModel(batch: HeadlineRow[]): Promise<Sentiment[]> {
+async function tagWithModel(batch: HeadlineRow[], userId: string): Promise<Sentiment[]> {
   const listed = batch.map((h, i) => `${i}. ${h.title}`).join("\n");
 
   const reply = await completeJson<unknown>({
     system: ANALYST_SYSTEM,
     messages: [{ role: "user", content: listed }],
     maxTokens: 2048,
+    meter: { userId, purpose: "analyst", stage: "tagging" },
   });
   // The array is sometimes wrapped in an object ({"labels": [...]}); anything
   // else leaves every headline neutral rather than failing the whole run.
@@ -182,7 +183,8 @@ Reply with JSON only:
 export async function strategist(
   company: CompanyRow,
   headlines: HeadlineRow[],
-  sentiment: SentimentSummary
+  sentiment: SentimentSummary,
+  userId: string
 ): Promise<StrategistResult> {
   const metrics = await safeMetrics(company.id);
 
@@ -229,6 +231,7 @@ export async function strategist(
     system: STRATEGIST_SYSTEM,
     messages: [{ role: "user", content: JSON.stringify(payload) }],
     maxTokens: 2048,
+    meter: { userId, purpose: "strategist", stage: "brief" },
   });
 
   const verdict = VERDICTS.includes(parsed.verdict as Verdict)
@@ -255,7 +258,7 @@ export async function strategist(
     bull: cleanList(parsed.bull),
     bear: cleanList(parsed.bear),
     catalysts: cleanList(parsed.catalysts),
-    provider: MODEL,
+    provider: modelName(),
   };
 }
 

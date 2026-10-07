@@ -1,14 +1,15 @@
 import Link from "next/link";
 import { analyzeRisk } from "@/lib/risk/engine";
+import type { Actor } from "@/lib/actor";
 
 const TONE: Record<string, string> = { high: "bad", warn: "warn", info: "info" };
 
 // The Command Center's "what risks are developing?" — rendered inside Suspense,
 // because it fetches a year of prices and the rest of the page should not wait.
-export async function RiskBrief() {
+export async function RiskBrief({ actor }: { actor: Pick<Actor, "userId" | "accountId"> }) {
   let report;
   try {
-    report = await analyzeRisk({ kind: "holdings" });
+    report = await analyzeRisk(actor, { kind: "holdings" });
   } catch {
     return null;
   }

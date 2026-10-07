@@ -1,22 +1,15 @@
-import { pool } from "./db";
-import {
-  budgetRemaining,
-  BudgetExhaustedError,
-  reserveDossier,
-  complete,
-  hasModel,
-  NoModelError,
-  type Message,
-  type Tool,
-} from "./llm";
+import { LOCKS, pool, withLock, type Db } from "./db";
+import { config } from "./config";
+import { complete, hasModel, NoModelError, type Message, type Tool } from "./llm";
 import type { Mode } from "./ai/modes";
+import type { Actor } from "./actor";
 import { scoutFeeds } from "./feeds";
-import { resolveCompany } from "./resolve";
-import { analyst, dossierHash, scout, strategist } from "./agents";
-import { addToWatchlist } from "./company";
-import { getCachedDossier, saveDossier, type Dossier } from "./dossier";
+import { runJobAndWait } from "./jobs/start";
+import { capToolResult, guardToolCall } from "./ai/guards";
+import { log } from "./log";
+import { findCompany } from "./company";
+import { getLatestDossier } from "./dossier";
 import { fetchChart } from "./quote";
-import { runConsensus } from "./ai/committee";
 import { getRun } from "./ai/store";
 import { isMode } from "./ai/modes";
 import { analyzeRisk, basisFrom } from "./risk/engine";
@@ -60,7 +53,7 @@ const TOOLS: Tool[] = [
   {
     name: "get_news",
     description:
-      "Fetch current headlines about any company, ticker or topic from five public news feeds. " +
+      "Fetch current headlines about any company, ticker or topic from the public news feeds. " +
       "Returns headlines with their outlet and date. Use this for questions about what is happening.",
     input_schema: {
       type: "object",
@@ -196,7 +189,7 @@ const TOOLS: Tool[] = [
   {
     name: "get_quote",
     description:
-      "Get the current price, previous close and one-month daily history for a ticker from Yahoo Finance.",
+      "Get the current price, previous close and one-month daily history for a ticker from the desk's market-data provider.",
     input_schema: {
       type: "object",
       properties: {
@@ -235,48 +228,26 @@ async function runGetNews(query: string): Promise<{ result: unknown; summary: st
     },
     summary: `${articles.length} headlines for "${query}" from ${
       feeds.filter((f) => f.articles.length > 0).length
-    } of 5 feeds`,
+    } of ${feeds.length} feeds`,
   };
 }
 
-async function runResearchTicker(ticker: string): Promise<{ result: unknown; summary: string }> {
-  const company = await resolveCompany(ticker);
-  await addToWatchlist(company.id, null);
+// The same job, budget and per-ticker lock the research page uses: asking
+// through the copilot is not a way around any of them.
+const RESEARCH_WAIT_MS = 180_000;
+const COMMITTEE_WAIT_MS = 240_000;
 
-  const scouted = await scout(company);
-  if ((await budgetRemaining()) <= 0) throw new BudgetExhaustedError();
-  const analysed = await analyst(company);
-  const hash = dossierHash(company, analysed.headlines);
-
-  let dossier: Dossier | null = await getCachedDossier(company.id, hash);
-
-  if (!dossier) {
-    // The same daily ceiling the research route enforces, claimed the same
-    // way: asking through the copilot is not a way around it.
-    const release = await reserveDossier();
-    try {
-      const call = await strategist(company, analysed.headlines, analysed.sentiment);
-      await saveDossier({
-        companyId: company.id,
-        inputHash: hash,
-        headlineIds: analysed.headlines.map((h) => h.id),
-        verdict: call.verdict,
-        confidence: call.confidence,
-        risk: call.risk,
-        horizon: call.horizon,
-        brief: call.brief,
-        bull: call.bull,
-        bear: call.bear,
-        catalysts: call.catalysts,
-        sentiment: analysed.sentiment,
-        feeds: scouted.feeds,
-        provider: call.provider,
-      });
-    } finally {
-      await release();
-    }
-    dossier = await getCachedDossier(company.id, hash);
+async function runResearchTicker(actor: Actor, ticker: string): Promise<{ result: unknown; summary: string }> {
+  const job = await runJobAndWait(actor, "research", { ticker }, RESEARCH_WAIT_MS);
+  if (job.status !== "succeeded") {
+    return {
+      result: { status: job.status, error: job.error, note: "the research run did not finish in time; it carries on in the background" },
+      summary: `research on ${ticker.toUpperCase()}: ${job.status}`,
+    };
   }
+  const company = await findCompany(ticker);
+  if (!company) throw new Error(`no company row for ${ticker}`);
+  const dossier = await getLatestDossier(company.id);
 
   return {
     result: {
@@ -335,17 +306,38 @@ function allowedMode(requested: unknown, userText: string): Mode {
 }
 
 async function runConveneCommittee(
+  actor: Actor,
   ticker: string,
   mode: unknown,
   question: unknown,
   userText: string
 ): Promise<{ result: unknown; summary: string }> {
-  const { runId, cached } = await runConsensus({
-    ticker,
-    mode: allowedMode(mode, userText),
-    focus: typeof question === "string" ? question.slice(0, 400) : null,
-  });
-  const run = await getRun(runId);
+  const job = await runJobAndWait(
+    actor,
+    "committee",
+    {
+      ticker,
+      mode: allowedMode(mode, userText),
+      focus: typeof question === "string" ? question.slice(0, 400) : null,
+    },
+    COMMITTEE_WAIT_MS
+  );
+  if (job.status !== "succeeded") {
+    return {
+      result: {
+        status: job.status,
+        error: job.error,
+        note:
+          job.status === "running" || job.status === "queued"
+            ? "the committee is still sitting; its report will be on the Investment Committee page when it finishes"
+            : "the committee did not finish",
+        page: "/committee",
+      },
+      summary: `${ticker.toUpperCase()} committee: ${job.status}`,
+    };
+  }
+  const { runId, cached } = job.result as { runId: string; cached: boolean };
+  const run = await getRun(actor.userId, runId);
   const report = run?.report;
   if (!report) throw new Error("the committee finished without a report");
 
@@ -374,8 +366,9 @@ async function runConveneCommittee(
   };
 }
 
-async function runPortfolioRisk(basket: unknown, watchlist: unknown): Promise<{ result: unknown; summary: string }> {
+async function runPortfolioRisk(actor: Actor, basket: unknown, watchlist: unknown): Promise<{ result: unknown; summary: string }> {
   const report = await analyzeRisk(
+    actor,
     basisFrom({ basket: typeof basket === "string" ? basket : null, source: watchlist === true ? "watchlist" : null })
   );
   if (report.positions.length === 0) {
@@ -412,12 +405,12 @@ async function runPortfolioRisk(basket: unknown, watchlist: unknown): Promise<{ 
   };
 }
 
-async function runScenarioTool(factor: unknown, shockPct: unknown, basket: unknown): Promise<{ result: unknown; summary: string }> {
+async function runScenarioTool(actor: Actor, factor: unknown, shockPct: unknown, basket: unknown): Promise<{ result: unknown; summary: string }> {
   const id = FACTORS.find((f) => f.id === factor)?.id as FactorId | undefined;
   const shock = Number(shockPct) / 100;
   if (!id || !Number.isFinite(shock)) throw new Error("run_scenario needs a known factor and a numeric shock_pct");
 
-  const report = await analyzeRisk(basisFrom({ basket: typeof basket === "string" ? basket : null }));
+  const report = await analyzeRisk(actor, basisFrom({ basket: typeof basket === "string" ? basket : null }));
   const result = applyScenario(report.exposures, id, shock);
   return {
     result: {
@@ -506,8 +499,8 @@ async function runBacktestTool(input: Record<string, unknown>): Promise<{ result
   };
 }
 
-async function runPaperPortfolio(): Promise<{ result: unknown; summary: string }> {
-  const p = await paperPortfolio();
+async function runPaperPortfolio(actor: Actor): Promise<{ result: unknown; summary: string }> {
+  const p = await paperPortfolio(actor.userId);
   return {
     result: {
       value: Math.round(p.value),
@@ -523,29 +516,36 @@ async function runPaperPortfolio(): Promise<{ result: unknown; summary: string }
 }
 
 async function runTool(
+  actor: Actor,
   name: string,
   input: Record<string, unknown>,
   userText: string
 ): Promise<{ result: unknown; summary: string }> {
   try {
+    const known = typeof input.ticker === "string" ? await findCompany(input.ticker).catch(() => null) : null;
+    const guard = guardToolCall(name, input, userText, known?.name);
+    if (!guard.allowed) {
+      log.warn({ userId: actor.userId, tool: name, ticker: input.ticker }, "copilot tool call refused by guard");
+      return { result: { error: guard.reason }, summary: `${name} refused: not a ticker the person named` };
+    }
     if (name === "get_news") return await runGetNews(String(input.query ?? ""));
-    if (name === "research_ticker") return await runResearchTicker(String(input.ticker ?? ""));
+    if (name === "research_ticker") return await runResearchTicker(actor, String(input.ticker ?? ""));
     if (name === "get_quote") return await runGetQuote(String(input.ticker ?? ""));
     if (name === "market_regime") return await runMarketRegime();
     if (name === "get_alerts") {
-      const alerts = await listAlerts({ status: "new", limit: 25 });
+      const alerts = await listAlerts(actor.userId, { status: "new", limit: 25 });
       return {
         result: { alerts: alerts.map((a) => ({ severity: a.severity, ticker: a.ticker, title: a.title, detail: a.detail, portfolio_effect: a.impact?.portfolio_effect ?? null, committee_report: a.runId ? `/committee/${a.runId}` : null, when: a.createdAt })), page: "/alerts" },
         summary: `${alerts.length} open alerts`,
       };
     }
     if (name === "run_backtest") return await runBacktestTool(input);
-    if (name === "paper_portfolio") return await runPaperPortfolio();
+    if (name === "paper_portfolio") return await runPaperPortfolio(actor);
     if (name === "run_screen") return await runScreenTool(input.rules);
-    if (name === "portfolio_risk") return await runPortfolioRisk(input.basket, input.use_watchlist);
-    if (name === "run_scenario") return await runScenarioTool(input.factor, input.shock_pct, input.basket);
+    if (name === "portfolio_risk") return await runPortfolioRisk(actor, input.basket, input.use_watchlist);
+    if (name === "run_scenario") return await runScenarioTool(actor, input.factor, input.shock_pct, input.basket);
     if (name === "convene_committee") {
-      return await runConveneCommittee(String(input.ticker ?? ""), input.mode, input.question, userText);
+      return await runConveneCommittee(actor, String(input.ticker ?? ""), input.mode, input.question, userText);
     }
     return { result: { error: `no tool named ${name}` }, summary: `unknown tool ${name}` };
   } catch (err) {
@@ -565,7 +565,7 @@ export interface ChatTurn {
   toolCalls: ToolCallRecord[];
 }
 
-export async function ask(question: string, history: Message[]): Promise<ChatTurn> {
+export async function ask(actor: Actor, question: string, history: Message[]): Promise<ChatTurn> {
   if (!hasModel()) throw new NoModelError();
 
   const messages: Message[] = [...history, { role: "user", content: question }];
@@ -577,7 +577,8 @@ export async function ask(question: string, history: Message[]): Promise<ChatTur
       messages,
       tools: TOOLS,
       maxTokens: 2048,
-      });
+      meter: { userId: actor.userId, purpose: "copilot", stage: `turn-${turn + 1}` },
+    });
 
     if (reply.toolUses.length === 0) {
       return { reply: reply.text || "I could not find anything to answer that with.", toolCalls };
@@ -587,12 +588,12 @@ export async function ask(question: string, history: Message[]): Promise<ChatTur
 
     const results = [];
     for (const use of reply.toolUses) {
-      const { result, summary } = await runTool(use.name, use.input, question);
+      const { result, summary } = await runTool(actor, use.name, use.input, question);
       toolCalls.push({ name: use.name, input: use.input, summary });
       results.push({
         type: "tool_result",
         tool_use_id: use.id,
-        content: JSON.stringify(result),
+        content: capToolResult(result),
       });
     }
 
@@ -615,11 +616,11 @@ export interface StoredMessage {
   createdAt: string;
 }
 
-export async function loadTranscript(limit = 40): Promise<StoredMessage[]> {
+export async function loadTranscript(userId: string, limit = 40): Promise<StoredMessage[]> {
   const { rows } = await pool.query(
     `SELECT id, role, content, tool_calls, created_at
-     FROM chat_messages ORDER BY id DESC LIMIT $1`,
-    [limit]
+     FROM chat_messages WHERE user_id = $1 ORDER BY id DESC LIMIT $2`,
+    [userId, limit]
   );
 
   return rows.reverse().map((r) => ({
@@ -632,30 +633,48 @@ export async function loadTranscript(limit = 40): Promise<StoredMessage[]> {
 }
 
 export async function saveMessage(
+  userId: string,
   role: "user" | "assistant",
   content: string,
-  toolCalls: ToolCallRecord[] = []
+  toolCalls: ToolCallRecord[] = [],
+  db: Db = pool
 ): Promise<void> {
-  await pool.query(
-    `INSERT INTO chat_messages (role, content, tool_calls) VALUES ($1, $2, $3)`,
-    [role, content, JSON.stringify(toolCalls)]
+  await db.query(
+    `INSERT INTO chat_messages (user_id, role, content, tool_calls) VALUES ($1, $2, $3, $4)`,
+    [userId, role, content, JSON.stringify(toolCalls)]
   );
 }
 
-// Each copilot turn is up to MAX_TURNS model calls that no other budget counts,
-// so turns get a daily ceiling of their own, counted from the transcript.
-const DAILY_CHAT_BUDGET = Number(process.env.DAILY_CHAT_BUDGET ?? 150);
+export class ChatBudgetError extends Error {
+  readonly status = 429;
+  constructor() {
+    super(`the daily limit of ${config().DAILY_CHAT_BUDGET} copilot questions is used up (DAILY_CHAT_BUDGET)`);
+    this.name = "ChatBudgetError";
+  }
+}
 
-export async function chatTurnsLeft(): Promise<number> {
-  const { rows } = await pool.query(
+// Each copilot turn is up to MAX_TURNS model calls, so turns get a daily
+// ceiling of their own, counted from the transcript. The count and the
+// question's row are written under one lock, so two questions sent together
+// cannot both take the last turn.
+export async function chatTurnsLeft(userId: string, db: Db = pool): Promise<number> {
+  const { rows } = await db.query(
     `SELECT count(*)::int AS n FROM chat_messages
-     WHERE role = 'user' AND created_at >= date_trunc('day', now())`
+     WHERE user_id = $1 AND role = 'user' AND created_at >= date_trunc('day', now())`,
+    [userId]
   );
-  return Math.max(0, DAILY_CHAT_BUDGET - rows[0].n);
+  return Math.max(0, config().DAILY_CHAT_BUDGET - rows[0].n);
 }
 
-export async function clearTranscript(): Promise<void> {
-  await pool.query(`DELETE FROM chat_messages`);
+export async function claimChatTurn(userId: string, question: string): Promise<void> {
+  await withLock(LOCKS.chatBudget(userId), async (client) => {
+    if ((await chatTurnsLeft(userId, client)) <= 0) throw new ChatBudgetError();
+    await saveMessage(userId, "user", question, [], client);
+  });
+}
+
+export async function clearTranscript(userId: string): Promise<void> {
+  await pool.query(`DELETE FROM chat_messages WHERE user_id = $1`, [userId]);
 }
 
 // Only the text of each turn goes back to the model. Replaying old tool_use

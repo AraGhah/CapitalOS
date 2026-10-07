@@ -1,3 +1,5 @@
+import { config } from "./config";
+
 // Headlines are short and repetitive, and near-duplicate detection mostly comes
 // down to which words two of them share. A hosted embedding model does that
 // better, so it is used when a key is present, but the local vectors below keep
@@ -90,7 +92,7 @@ export interface Embeddings {
 export async function embed(texts: string[]): Promise<Embeddings> {
   if (texts.length === 0) return { provider: "none", vectors: [] };
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = config().OPENAI_API_KEY;
   if (apiKey) {
     return { provider: "openai:text-embedding-3-small", vectors: await openAiVectors(texts, apiKey) };
   }

@@ -2,6 +2,7 @@ import { pool } from "./db";
 import { latestMetrics, getScores } from "./scoring";
 import { loadBars, momentum } from "./market/bars";
 import { capitalisationShares } from "./edgar";
+import { getSplits, sharesOnPriceBasis } from "./splits";
 
 /* ---------------------------------------------------------------------------
    The opportunity scanner.
@@ -224,7 +225,11 @@ async function metricsFor(company: { id: string; ticker: string }, scores: Map<s
 
     // Valuation from the same price and the latest annual figures.
     const raw = facts.raw;
-    const shares = capitalisationShares(raw)?.toNumber();
+    const filed = capitalisationShares(raw);
+    const shares =
+      filed && facts.periodEnd
+        ? sharesOnPriceBasis(filed, facts.periodEnd, (await getSplits([company.id])).get(company.id)).toNumber()
+        : undefined;
     if (shares && shares > 0) {
       const cap = m.last * shares;
       const income = raw.get("net_income")?.toNumber();

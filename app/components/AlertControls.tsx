@@ -1,6 +1,7 @@
 "use client";
 
 import { request } from "@/app/components/request";
+import { startAndFollow } from "@/app/components/jobs";
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -60,19 +61,21 @@ export function RunCycle({ hasModel }: { hasModel: boolean }) {
   async function run() {
     setBusy(true);
     setError(null);
-    const res = await request("/api/autopilot", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ convene }),
-    });
-    const body = await res.json().catch(() => ({}));
-    setBusy(false);
-    if (!res.ok) {
-      setError(body.error ?? "the pass failed");
-      return;
+    try {
+      const outcome = await startAndFollow(
+        "/api/autopilot",
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convene }) },
+        () => undefined,
+        (notice) => setError(notice)
+      );
+      if (outcome.status !== "succeeded") setError(outcome.error ?? `the pass ended ${outcome.status}`);
+      else setSummary(outcome.result as Summary);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
     }
-    setSummary(body);
-    router.refresh();
   }
 
   return (

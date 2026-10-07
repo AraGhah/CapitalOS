@@ -1,4 +1,7 @@
 import "../lib/env";
+import { LEGACY_ACCOUNT_ID, LEGACY_OWNER_ID } from "../lib/actor";
+
+const OWNER = { userId: LEGACY_OWNER_ID, accountId: LEGACY_ACCOUNT_ID };
 import assert from "node:assert/strict";
 import { pool } from "../lib/db";
 import { resolveCompany } from "../lib/resolve";
@@ -187,14 +190,14 @@ function scripted(): (spec: ModelSpec, req: ModelRequest) => Promise<ModelResult
       throw new Error(`the script has no reply for role "${role}"`);
     }
 
-    return { text: "```json\n" + JSON.stringify(body) + "\n```", inputTokens: 1000, outputTokens: 200, cachedTokens: 800, latencyMs: 5, costUsd: spec.priceIn === null ? null : 0.01 };
+    return { text: "```json\n" + JSON.stringify(body) + "\n```", inputTokens: 1000, outputTokens: 200, cachedTokens: 800, cacheWriteTokens: 0, latencyMs: 5, costUsd: 0.01, costEstimated: spec.priceIn === null };
   };
 }
 
 async function committeeRun() {
   section(`evidence pack for ${ticker}`);
   const company = await resolveCompany(ticker);
-  const pack = await buildEvidence(company);
+  const pack = await buildEvidence(company, OWNER);
   const kinds = pack.items.reduce<Record<string, number>>((acc, i) => ({ ...acc, [i.kind]: (acc[i.kind] ?? 0) + 1 }), {});
   console.log(`${pack.items.length} items`, kinds);
   console.log(`coverage ${pack.coverage.present}/${pack.coverage.expected}; period ${pack.periodEnd}`);
@@ -204,13 +207,13 @@ async function committeeRun() {
   section("scripted investment committee");
   const events: RunEvent[] = [];
   const { runId, cached } = await runConsensus(
-    { ticker, mode: "committee", focus: FOCUS, force: true, caller: scripted() },
+    { actor: OWNER, ticker, mode: "committee", focus: FOCUS, force: true, caller: scripted() },
     (e) => events.push(e)
   );
   assert.equal(cached, false);
 
   try {
-    const run = await getRun(runId);
+    const run = await getRun(OWNER.userId, runId);
     assert.ok(run?.report, "the report was stored");
     const report = run.report;
 
@@ -240,7 +243,7 @@ async function committeeRun() {
     assert.equal(mem[0].n, 3, "one assumption, two invalidation conditions (one untestable)");
     console.log(`ok: ${evals[0].n} evaluations, ${mem[0].n} memories, report assembled`);
 
-    const again = await runConsensus({ ticker, mode: "committee", focus: FOCUS, caller: scripted() });
+    const again = await runConsensus({ actor: OWNER, ticker, mode: "committee", focus: FOCUS, caller: scripted() });
     assert.equal(again.runId, runId, "identical evidence is served from the cache");
     console.log("ok: a second identical run hit the cache");
   } finally {

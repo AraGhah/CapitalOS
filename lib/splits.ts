@@ -1,5 +1,7 @@
 import Decimal from "decimal.js";
-import { pool } from "./db";
+import { pool, type Db } from "./db";
+import { splits as providerSplits } from "./market/data";
+import type { Split } from "./market/types";
 
 /* ---------------------------------------------------------------------------
    Stock splits.
@@ -11,39 +13,11 @@ import { pool } from "./db";
    is what lets quantities and prices be put on the same basis.
 --------------------------------------------------------------------------- */
 
-export interface Split {
-  date: string;
-  // new shares per old share: 4 for a 4-for-1 split, 0.1 for a 1-for-10 reverse
-  ratio: Decimal;
-}
+export type { Split } from "./market/types";
 
-interface YahooSplits {
-  chart: {
-    result?: Array<{
-      events?: { splits?: Record<string, { date: number; numerator: number; denominator: number }> };
-    }>;
-  };
-}
-
+// From the configured market-data provider.
 export async function fetchSplits(ticker: string): Promise<Split[]> {
-  const url =
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}` +
-    `?range=max&interval=1mo&events=split`;
-  const res = await fetch(url, {
-    headers: { "User-Agent": "CapitalOS/1.0 (personal research desk)", Accept: "application/json" },
-    signal: AbortSignal.timeout(12_000),
-  });
-  if (!res.ok) throw new Error(`Yahoo splits ${res.status} ${res.statusText}`);
-  const body = (await res.json()) as YahooSplits;
-  const raw = body.chart.result?.[0]?.events?.splits ?? {};
-
-  return Object.values(raw)
-    .filter((s) => s.numerator > 0 && s.denominator > 0)
-    .map((s) => ({
-      date: new Date(s.date * 1000).toISOString().slice(0, 10),
-      ratio: new Decimal(s.numerator).div(s.denominator),
-    }))
-    .sort((a, b) => a.date.localeCompare(b.date));
+  return providerSplits(ticker);
 }
 
 export async function storeSplits(companyId: string, splits: Split[]): Promise<void> {
@@ -56,23 +30,19 @@ export async function storeSplits(companyId: string, splits: Split[]): Promise<v
   }
 }
 
-// Missing table (migration not run yet) reads as "no splits", which is what the
-// desk assumed before the table existed.
-export async function getSplits(companyIds: string[]): Promise<Map<string, Split[]>> {
+export async function getSplits(companyIds: string[], db: Db = pool): Promise<Map<string, Split[]>> {
   const out = new Map<string, Split[]>();
   if (companyIds.length === 0) return out;
-  try {
-    const { rows } = await pool.query(
-      `SELECT company_id, date, ratio FROM splits WHERE company_id = ANY($1) ORDER BY date`,
-      [companyIds]
-    );
-    for (const r of rows) {
-      const list = out.get(r.company_id) ?? [];
-      list.push({ date: (r.date as Date).toISOString().slice(0, 10), ratio: new Decimal(r.ratio) });
-      out.set(r.company_id, list);
-    }
-  } catch {
-    // no splits table
+  // No catch here: a failed read must not be mistaken for "no splits", which
+  // would silently mis-state every quantity across a split.
+  const { rows } = await db.query(
+    `SELECT company_id, date, ratio FROM splits WHERE company_id = ANY($1) ORDER BY date`,
+    [companyIds]
+  );
+  for (const r of rows) {
+    const list = out.get(r.company_id) ?? [];
+    list.push({ date: (r.date as Date).toISOString().slice(0, 10), ratio: new Decimal(r.ratio) });
+    out.set(r.company_id, list);
   }
   return out;
 }
@@ -86,4 +56,13 @@ export function splitFactor(splits: Split[] | undefined, from: string, to: strin
     if (s.date > from && s.date <= to) factor = factor.mul(s.ratio);
   }
   return factor;
+}
+
+// A share count reported for a period, restated in today's shares. Every price
+// the desk uses is back-adjusted for every split up to today, so a market cap
+// is shares-as-filed × the splits since the period ended × that price. Without
+// this, a 10-for-1 split makes every earlier period's market cap ten times too
+// small (and every P/E ten times too cheap).
+export function sharesOnPriceBasis(shares: Decimal, periodEnd: string, splits: Split[] | undefined): Decimal {
+  return shares.mul(splitFactor(splits, periodEnd));
 }
