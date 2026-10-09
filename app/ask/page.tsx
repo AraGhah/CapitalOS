@@ -11,7 +11,7 @@ export default async function AskPage({ searchParams }: PageProps<"/ask">) {
     <div>
       <div className="page-head">
         <div>
-          <p className="eyebrow">Every answer names the tool behind it</p>
+          <p className="eyebrow">Every answer names the tools and the AI models behind it</p>
           <h1>Capital Copilot</h1>
         </div>
       </div>

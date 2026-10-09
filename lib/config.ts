@@ -39,6 +39,8 @@ const schema = z
     SESSION_SECRET: z.string().min(32, "SESSION_SECRET must be at least 32 characters").optional(),
     SESSION_DAYS: z.coerce.number().int().min(1).max(90).default(14),
     ALLOW_SIGNUP: flag,
+    // TEMPORARY: skip sign-in and act as the legacy owner. Refused in production.
+    AUTH_DISABLED: flag,
     CAPITALOS_ALLOWED_HOSTS: list,
     // Set when TLS terminates in front of the app, so cookies are always Secure.
     TRUST_PROXY: flag,
@@ -50,6 +52,8 @@ const schema = z
 
     ANTHROPIC_API_KEY: z.string().min(1).optional(),
     ANTHROPIC_MODEL: z.string().min(1).default("claude-opus-5-5"),
+    // A gateway or proxy in front of the Messages API; the API itself by default.
+    ANTHROPIC_BASE_URL: z.string().url().default("https://api.anthropic.com"),
     OPENAI_API_KEY: z.string().min(1).optional(),
 
     DAILY_DOSSIER_BUDGET: count(40),
@@ -108,6 +112,9 @@ const schema = z
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === "production" && !env.SESSION_SECRET) {
       ctx.addIssue({ code: "custom", path: ["SESSION_SECRET"], message: "SESSION_SECRET is required in production" });
+    }
+    if (env.NODE_ENV === "production" && env.AUTH_DISABLED) {
+      ctx.addIssue({ code: "custom", path: ["AUTH_DISABLED"], message: "AUTH_DISABLED cannot be set in production" });
     }
     if (env.TOKEN_ENCRYPTION_KEY !== undefined && Buffer.from(env.TOKEN_ENCRYPTION_KEY, "base64").length !== 32) {
       ctx.addIssue({ code: "custom", path: ["TOKEN_ENCRYPTION_KEY"], message: "TOKEN_ENCRYPTION_KEY must be 32 bytes, base64-encoded" });

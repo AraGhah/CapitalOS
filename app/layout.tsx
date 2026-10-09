@@ -10,6 +10,7 @@ import { TickerTape } from "./components/TickerTape";
 import { DeskStatus } from "./components/DeskStatus";
 import { SignOut } from "./components/SignOut";
 import { currentUser } from "@/lib/auth/current";
+import { config } from "@/lib/config";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
@@ -70,7 +71,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
           <div className="topbar-right">
             <TickerSearch />
             <ThemeToggle />
-            <SignOut email={user.email} />
+            {!config().AUTH_DISABLED && <SignOut email={user.email} />}
           </div>
         </header>
 

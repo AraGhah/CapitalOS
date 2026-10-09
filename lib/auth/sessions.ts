@@ -1,4 +1,5 @@
 import { pool, type Db } from "../db";
+import { LEGACY_OWNER_ID } from "../actor";
 import { config } from "../config";
 import { hashToken, newSessionToken, signSessionCookie, verifySessionCookie } from "./cookie";
 
@@ -40,6 +41,29 @@ export async function createSession(
 // revoked or belongs to a disabled user. A session used after half its life is
 // extended, so an active person is not signed out mid-week.
 export async function resolveSession(cookie: string | undefined | null): Promise<SessionUser | null> {
+  const user = await resolveSignedSession(cookie);
+  if (user || !config().AUTH_DISABLED) return user;
+  return ownerWithoutSignIn();
+}
+
+// TEMPORARY (AUTH_DISABLED): everyone is the legacy owner, no session needed.
+async function ownerWithoutSignIn(): Promise<SessionUser | null> {
+  const { rows } = await pool.query(`SELECT id, email, display_name FROM users WHERE id = $1`, [LEGACY_OWNER_ID]);
+  const row = rows[0];
+  if (!row) return null;
+  const account = await ensureAccount(row.id);
+  return {
+    sessionId: "auth-disabled",
+    userId: row.id,
+    email: row.email,
+    displayName: row.display_name,
+    accountId: account.id,
+    baseCurrency: account.baseCurrency,
+    expiresAt: new Date(Date.now() + lifetimeMs()),
+  };
+}
+
+async function resolveSignedSession(cookie: string | undefined | null): Promise<SessionUser | null> {
   const token = verifySessionCookie(cookie);
   if (!token) return null;
   const id = hashToken(token);

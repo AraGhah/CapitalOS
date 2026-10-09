@@ -217,6 +217,7 @@ export interface StoredCall {
   stage: string;
   agent: string;
   modelId: string;
+  provider: string;
   model: string;
   error: string | null;
   inputTokens: number;
@@ -243,7 +244,7 @@ export async function getRun(userId: string, id: string): Promise<StoredRun | nu
   const { rows: ev } = await pool.query(`SELECT evidence FROM consensus_runs WHERE id = $1`, [id]);
 
   const { rows: calls } = await pool.query(
-    `SELECT id, stage, agent, model_id, model, error, input_tokens, output_tokens, cached_tokens,
+    `SELECT id, stage, agent, model_id, provider, model, error, input_tokens, output_tokens, cached_tokens,
             latency_ms, cost_usd
      FROM model_calls WHERE run_id = $1 ORDER BY id`,
     [id]
@@ -258,6 +259,7 @@ export async function getRun(userId: string, id: string): Promise<StoredRun | nu
       stage: c.stage,
       agent: c.agent,
       modelId: c.model_id,
+      provider: c.provider,
       model: c.model,
       error: c.error,
       inputTokens: c.input_tokens,

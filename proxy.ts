@@ -137,7 +137,20 @@ export function proxy(req: NextRequest) {
     }
   }
 
-  const isPublic = PUBLIC_PATHS.some((p) => p.test(path));
+  // TEMPORARY: AUTH_DISABLED skips sign-in; the routes act as the legacy owner.
+  const authDisabled =
+    process.env.NODE_ENV !== "production" &&
+    ["1", "true", "yes", "on"].includes((process.env.AUTH_DISABLED ?? "").toLowerCase());
+  if (authDisabled && path === "/login") {
+    const home = req.nextUrl.clone();
+    home.pathname = "/";
+    home.search = "";
+    const res = NextResponse.redirect(home);
+    res.headers.set("x-request-id", requestId);
+    return secure(res, null, isHttps(req));
+  }
+
+  const isPublic = authDisabled || PUBLIC_PATHS.some((p) => p.test(path));
   if (!isPublic) {
     let signed = false;
     try {
