@@ -16,6 +16,8 @@ import { DeskRunner } from "@/app/components/DeskRunner";
 import { Wire } from "@/app/components/Wire";
 import { listRuns } from "@/lib/ai/store";
 import { modeSpec } from "@/lib/ai/modes";
+import { Suspense } from "react";
+import { ChecklistPanel } from "@/app/components/ChecklistPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -115,6 +117,21 @@ export default async function ResearchPage({ params }: PageProps<"/research/[tic
       <div className="split">
         <div className="stack">
           <DeskRunner ticker={company.ticker} initialDossier={dossier} />
+
+          <Suspense
+            fallback={
+              <section className="panel" id="checklist">
+                <div className="panel-head">
+                  <h2>Pre-investment checklist</h2>
+                </div>
+                <p className="missing" style={{ padding: "0.9rem" }}>
+                  Checking every question before investing…
+                </p>
+              </section>
+            }
+          >
+            <ChecklistPanel actor={actor} ticker={company.ticker} />
+          </Suspense>
 
           <section className="panel">
             <div className="panel-head">

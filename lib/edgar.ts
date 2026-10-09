@@ -16,6 +16,10 @@ const METRIC_TAGS: Record<string, string[]> = {
     "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
   ],
   income_tax: ["IncomeTaxExpenseBenefit"],
+  // What interest coverage divides operating income by; the cash paid is the
+  // fallback for filers that do not report the expense line.
+  interest_expense: ["InterestExpense", "InterestExpenseNonoperating", "InterestExpenseDebt", "InterestPaidNet"],
+  dividends_paid: ["PaymentsOfDividendsCommonStock", "PaymentsOfDividends"],
   operating_cash_flow: [
     "NetCashProvidedByUsedInOperatingActivities",
     "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",

@@ -14,6 +14,7 @@ import { log } from "../lib/log";
 import { getPortfolio } from "../lib/holdings";
 import { getPortfolioSeries } from "../lib/timeseries";
 import { getScores } from "../lib/scoring";
+import { buildChecklist } from "../lib/checklist-data";
 import { SECTION_NAMES, getFilingSection } from "../lib/filing-text";
 import { RESEARCH_FIELDS, addClaims, getResearchNote, type ResearchField } from "../lib/research";
 import { registerFilingSource } from "../lib/sources";
@@ -155,6 +156,25 @@ server.registerTool(
   async ({ ticker, limit }) => {
     const rows = await listTransactions(actor, { ticker, limit });
     return reply(rows, [{ kind: "transactions", ref: actor.accountId }]);
+  }
+);
+
+server.registerTool(
+  "pre_investment_check",
+  {
+    title: "Pre-investment checklist",
+    description:
+      "Every question to answer before buying a stock, computed against the person's investor profile: readiness, " +
+      "savings, objective, horizon and risk capacity; the business, its cash and debt; valuation scenarios; macro; " +
+      "diversification, currency, liquidity; fees, taxes and broker safety; exit plan and downside. Run it before " +
+      "suggesting any purchase. Each item is pass, caution, fail, missing (no data) or input (only the person can answer).",
+    inputSchema: { ticker: z.string(), positionSize: z.number().min(0).optional() },
+  },
+  async ({ ticker, positionSize }) => {
+    const company = await resolve(ticker);
+    if (typeof company === "string") return failed(company);
+    const checklist = await buildChecklist(actor, company.ticker, { positionSize });
+    return reply(checklist, [companySource(company), { kind: "filing", ref: "annual XBRL facts" }, { kind: "prices_daily", ref: "one year of daily closes" }]);
   }
 );
 

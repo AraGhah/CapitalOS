@@ -21,8 +21,9 @@ export function loadWeights(): Record<string, number> {
 }
 
 // A restatement is a new row, so the value in force is the one from the most
-// recently filed report covering that period.
-async function annualPeriods(companyId: string): Promise<PeriodFacts[]> {
+// recently filed report covering that period. The pre-investment checklist
+// reads several of these periods to judge trends.
+export async function annualPeriods(companyId: string): Promise<PeriodFacts[]> {
   const { rows } = await pool.query(
     `SELECT DISTINCT ON (f.metric, f.period_end) f.metric, f.period_end, f.value
      FROM fundamentals f

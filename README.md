@@ -140,6 +140,36 @@ rather than billing for idle capacity.
 The Capital Copilot (`/ask`) can convene a committee itself with the
 `convene_committee` tool.
 
+## The pre-investment checklist (`/profile`, every research page)
+
+No stock is suggested until every question an investor should ask has an
+answer. `lib/checklist.ts` works through the full checklist — 23 questions
+plus whether the figures can be independently verified — about the person
+first, then the company:
+
+| Group | Questions |
+| --- | --- |
+| You | financial readiness (high-interest debt), emergency savings (months covered), objective, horizon, risk capacity (against a planned single-stock loss of at least 50%), whether you can explain the business |
+| The business | business quality, growth (CAGR, down years, acceleration, costs versus revenue), profitability, cash flow (conversion, profits up while cash falls), financial stability (net debt/EBITDA, interest coverage, a 30% revenue shock), management (dilution, capital returns), competitive advantage (sustained ROIC, margin stability), verifiability (current SEC annual report) |
+| The price | valuation: multiples, sector percentiles, pessimistic/normal/optimistic cash-flow scenarios and the growth the price assumes |
+| The economy | rates, curve, inflation and unemployment against the company's debt and valuation |
+| Your portfolio | diversification after buying, currency, liquidity (days to exit) |
+| Costs and safety | round-trip trading cost, account and tax (TFSA, RRSP, FHSA room and US withholding), broker registration |
+| Your plan | exit strategy (an open thesis with rules), downside in money against what you said you could lose |
+
+Each answer is pass, caution, fail, **missing** (the desk lacks the data) or
+**input** (only you can answer), with the figures it rests on and what it could
+not verify. A failed question about *you* makes the verdict "not ready",
+whatever the company looks like. The questions about you live on the investor
+profile (`/profile`, table `investor_profiles`); your reasons and exit rules live
+on a thesis. Every threshold is in the `T` table at the top of the file.
+
+The Copilot must call `pre_investment_check` before it suggests any stock, and
+screen and committee results remind it that they are not suggestions. The MCP
+server exposes the same tool. Interest coverage and dividend payout read
+`interest_expense` and `dividends_paid`; run `npm run ingest-edgar` once to pick
+them up.
+
 ## Portfolio risk (`/risk`)
 
 `lib/risk` measures the open positions — or the watchlist, or a what-if basket

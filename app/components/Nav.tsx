@@ -36,6 +36,7 @@ const GROUPS = [
   {
     label: "Portfolio",
     links: [
+      { href: "/profile", label: "Investor Profile" },
       { href: "/transactions", label: "Ledger" },
       { href: "/risk", label: "Risk & Scenarios" },
     ],

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ACCOUNT_TYPES, OBJECTIVES, RISK_TOLERANCES } from "../profile-fields";
 
 /* ---------------------------------------------------------------------------
    Request schemas shared by the API routes, the OpenAPI document and the
@@ -112,3 +113,29 @@ export const AccountPatch = z
     name: z.string().trim().min(1).max(80).optional(),
   })
   .refine((v) => Object.keys(v).length > 0, "nothing to change");
+
+const Money = z.number().finite().min(0).max(1e12).nullable();
+const Share = z.number().finite().min(0).max(1).nullable();
+
+// The investor profile: every field optional (a patch), and null clears one.
+export const ProfilePatch = z
+  .object({
+    monthlyExpenses: Money,
+    emergencyFund: Money,
+    highInterestDebt: Money,
+    investableAmount: Money,
+    positionSize: Money,
+    objective: z.enum(OBJECTIVES).nullable(),
+    horizonYears: z.number().finite().min(0).max(100).nullable(),
+    maxLossShare: Share,
+    riskTolerance: z.enum(RISK_TOLERANCES).nullable(),
+    accountType: z.enum(ACCOUNT_TYPES).nullable(),
+    contributionRoom: Money,
+    tradingCostShare: Share,
+    institution: z.string().trim().max(120).nullable(),
+    institutionVerified: z.boolean().nullable(),
+  })
+  .partial()
+  .strict();
+
+export const PositionSize = z.coerce.number().finite().min(0).max(1e12);

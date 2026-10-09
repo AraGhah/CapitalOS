@@ -3092,3 +3092,75 @@ tr.voided td .pill {
   border-radius: var(--radius-sm);
   padding: 0.6rem 0.8rem;
 }
+
+/* ---------------------------------------------------------------------------
+   The pre-investment checklist and the investor profile.
+--------------------------------------------------------------------------- */
+
+.check-verdict {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.95rem;
+}
+
+.check-group {
+  margin: 0.6rem 0 0.3rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.check-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.check-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  font-size: 0.875rem;
+}
+
+.check-item > .pill {
+  flex: none;
+  min-width: 5.6rem;
+  text-align: center;
+  margin-top: 0.1rem;
+}
+
+.check-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.check-body p {
+  margin: 0;
+}
+
+.check-facts td {
+  padding: 0.2rem 0.4rem 0.2rem 0;
+  font-size: 0.8rem;
+}
+
+.profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.75rem;
+}
+
+@media (max-width: 560px) {
+  .check-item {
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+}
