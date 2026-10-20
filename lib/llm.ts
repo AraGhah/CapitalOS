@@ -141,9 +141,9 @@ async function prepare(opts: CallOptions): Promise<Prepared> {
   await assertWithinSpend(opts.meter.userId);
 
   const maxTokens = opts.maxTokens ?? 2048;
-  // The system prompt and the tool list are identical on every turn of the
-  // copilot's loop, so they are marked cacheable: after the first call they
-  // are billed at the cache-read rate.
+  // The system prompt and the tool list repeat on every call of a loop, so they
+  // are marked cacheable: after the first call they are billed at the
+  // cache-read rate.
   const system = opts.system ? [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }] : undefined;
   const tools = opts.tools?.map((t, i, all) => (i === all.length - 1 ? { ...t, cache_control: { type: "ephemeral" } } : t));
 
@@ -165,7 +165,7 @@ async function prepare(opts: CallOptions): Promise<Prepared> {
   };
 }
 
-function post(p: Prepared, extra: Record<string, unknown> = {}): Promise<Response> {
+function post(p: Prepared): Promise<Response> {
   return fetchWithRetry(apiUrl(), {
     method: "POST",
     headers: {
@@ -173,7 +173,7 @@ function post(p: Prepared, extra: Record<string, unknown> = {}): Promise<Respons
       "x-api-key": p.apiKey,
       "anthropic-version": VERSION,
     },
-    body: JSON.stringify({ ...p.body, ...extra }),
+    body: JSON.stringify(p.body),
     signal: AbortSignal.timeout(120_000),
   });
 }
@@ -244,168 +244,6 @@ export async function complete(opts: CallOptions): Promise<Reply> {
     stopReason: body.stop_reason,
     usage: body.usage ?? {},
   });
-}
-
-// The same call, streamed: text reaches onText as the model writes it. The
-// Reply is the one complete() would have returned, so the copilot's tool loop
-// does not care which it used. The stream is read inside the concurrency gate,
-// so a long answer holds its slot until it has finished.
-export async function completeStreaming(opts: CallOptions, onText: (delta: string) => void): Promise<Reply> {
-  const p = await prepare(opts);
-  const started = Date.now();
-
-  let message: StreamedMessage;
-  try {
-    message = await gated("anthropic", async () => {
-      const res = await post(p, { stream: true });
-      if (!res.ok || !res.body) {
-        const body = await readJson<AnthropicResponse>(res);
-        throw new Error(`model request failed: ${res.status} ${body?.error?.message ?? res.statusText}`.trim());
-      }
-      return readMessageStream(res.body, onText);
-    });
-  } catch (err) {
-    await recordModelCall({ ...p.meta, error: (err as Error).message, latencyMs: Date.now() - started });
-    throw err;
-  }
-
-  return settle(p, started, message);
-}
-
-/* ------------------------------------------------------------------ stream */
-
-export interface StreamedMessage {
-  model: string | null;
-  content: AnthropicResponse["content"];
-  stopReason: string | null;
-  usage: Usage;
-}
-
-interface StreamEvent {
-  type: string;
-  index?: number;
-  message?: { model?: string; usage?: Usage };
-  content_block?: Record<string, unknown>;
-  delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string | null };
-  usage?: Usage;
-  error?: { message?: string };
-}
-
-// Reads the Messages API's server-sent events back into the message a
-// non-streaming call returns: text blocks joined from their deltas, tool
-// inputs parsed from their JSON fragments, usage from the start and end
-// events. A listener that throws does not stop the read.
-export async function readMessageStream(
-  body: ReadableStream<Uint8Array>,
-  onText: (delta: string) => void = () => undefined
-): Promise<StreamedMessage> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  const blocks: Array<Record<string, unknown>> = [];
-  const json: string[] = [];
-  const out: StreamedMessage = { model: null, content: [], stopReason: null, usage: {} };
-  let started = false;
-  let stopped = false;
-  let buffer = "";
-
-  const handle = (event: StreamEvent) => {
-    const i = event.index ?? -1;
-    switch (event.type) {
-      case "message_start":
-        started = true;
-        out.model = event.message?.model ?? null;
-        out.usage = { ...event.message?.usage };
-        break;
-      case "content_block_start": {
-        const block = { ...event.content_block };
-        if (block.type === "tool_use") json[i] = "";
-        if (block.type === "text" && typeof block.text !== "string") block.text = "";
-        blocks[i] = block;
-        break;
-      }
-      case "content_block_delta": {
-        const block = blocks[i];
-        if (!block || !event.delta) break;
-        if (event.delta.type === "text_delta" && typeof event.delta.text === "string") {
-          block.text = `${block.text ?? ""}${event.delta.text}`;
-          try {
-            onText(event.delta.text);
-          } catch {
-            // the listener's problem, not the reply's
-          }
-        } else if (event.delta.type === "input_json_delta" && typeof event.delta.partial_json === "string") {
-          json[i] = (json[i] ?? "") + event.delta.partial_json;
-        }
-        break;
-      }
-      case "content_block_stop": {
-        const block = blocks[i];
-        if (block?.type === "tool_use") {
-          const text = json[i]?.trim();
-          try {
-            block.input = text ? JSON.parse(text) : {};
-          } catch {
-            block.input = {};
-          }
-        }
-        break;
-      }
-      case "message_delta":
-        if (event.delta && "stop_reason" in event.delta) out.stopReason = event.delta.stop_reason ?? null;
-        if (event.usage) out.usage = { ...out.usage, ...event.usage };
-        break;
-      case "message_stop":
-        stopped = true;
-        break;
-      case "error":
-        throw new Error(`model stream failed: ${event.error?.message ?? "unknown error"}`);
-    }
-  };
-
-  // Events are separated by a blank line; only their data lines matter.
-  const drain = (final: boolean) => {
-    buffer = buffer.replace(/\r\n?/g, "\n");
-    for (;;) {
-      const at = buffer.indexOf("\n\n");
-      if (at === -1 && !(final && buffer.trim())) return;
-      const raw = at === -1 ? buffer : buffer.slice(0, at);
-      buffer = at === -1 ? "" : buffer.slice(at + 2);
-      const data = raw
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trimStart())
-        .join("\n");
-      if (!data) continue;
-      let event: StreamEvent;
-      try {
-        event = JSON.parse(data) as StreamEvent;
-      } catch {
-        continue;
-      }
-      handle(event);
-    }
-  };
-
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      drain(false);
-    }
-    buffer += decoder.decode();
-    drain(true);
-  } catch (err) {
-    await reader.cancel().catch(() => undefined);
-    throw err;
-  } finally {
-    reader.releaseLock();
-  }
-
-  if (!started) throw new Error("model stream ended before the message began");
-  if (!stopped && out.stopReason === null) throw new Error("model stream ended before the message finished");
-  out.content = blocks.filter(Boolean) as AnthropicResponse["content"];
-  return out;
 }
 
 /* ----------------------------------------------------------------------- JSON */

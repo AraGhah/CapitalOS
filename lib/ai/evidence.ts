@@ -1,16 +1,19 @@
 import Decimal from "decimal.js";
 import { pool } from "../db";
 import type { Actor } from "../actor";
-import { getFundamentals, getPriceHistory, type CompanyRow } from "../company";
+import { getFundamentals, type CompanyRow } from "../company";
 import { getScores, latestMetrics } from "../scoring";
 import { getHeadlines } from "../dossier";
 import { getResearchNote, RESEARCH_FIELDS } from "../research";
 import { listTheses } from "../theses";
 import { getPortfolio } from "../holdings";
-import { fetchChart } from "../quote";
+import { priceSeries, type Close } from "../price-series";
 import { inputHash } from "../llm";
 import { capitalisationShares } from "../edgar";
 import { getSplits, splitFactor } from "../splits";
+import { technicalSnapshot } from "../technicals";
+import { gatherSignals } from "../signals";
+import { technicalItems } from "./technical-items";
 
 /* ---------------------------------------------------------------------------
    The Capital Data Engine, as far as the committee is concerned: one evidence
@@ -38,7 +41,10 @@ export interface EvidenceItem {
     | "research"
     | "thesis"
     | "macro"
-    | "position";
+    | "position"
+    | "technical"
+    | "social"
+    | "prediction";
   label: string;
   value?: number;
   unit?: Unit;
@@ -83,6 +89,8 @@ export function formatValue(value: number, unit: Unit | undefined): string {
       return `${compactNumber(value)} shares`;
     case "count":
       return value.toFixed(0);
+    case "index":
+      return value.toFixed(1);
     default:
       return Number.isInteger(value) ? String(value) : value.toFixed(4);
   }
@@ -320,6 +328,17 @@ export async function buildEvidence(
     }
   }
 
+  /* ---- technical indicators, from the same bars */
+
+  // Indicators are read from complete sessions only: a session still trading
+  // has a "close" that is the price so far, and an RSI built on it would move
+  // with every refresh.
+  const technical = technicalSnapshot(price.technicalBars);
+  inputs.push({ name: "technical indicators", present: technical !== null });
+  if (technical) {
+    for (const item of technicalItems(technical, { kind: "computed", ref: `computed from ${price.ref} by lib/technicals` })) b.add(item);
+  }
+
   /* ---- the sector score */
 
   try {
@@ -374,6 +393,12 @@ export async function buildEvidence(
       source: { kind: "news", ref: h.domain ?? "news", url: h.url },
     });
   }
+
+  /* ---- outside signals: author-labelled StockTwits sentiment, Polymarket odds */
+
+  const signals = await gatherSignals(company);
+  for (const input of signals.inputs) inputs.push(input);
+  for (const item of signals.items) b.add(item);
 
   /* ---- sourced research claims, each already matched against its source */
 
@@ -457,46 +482,6 @@ export async function buildEvidence(
 }
 
 /* ---------------------------------------------------------------- prices */
-
-interface Close {
-  date: string;
-  close: number;
-}
-
-// Long enough to cover a holiday weekend, short enough that a forgotten price
-// job does not leave the committee reading last month's close as "last close".
-const STALE_AFTER_DAYS = 5;
-
-async function priceSeries(
-  company: CompanyRow
-): Promise<{ closes: Close[]; source: string; ref: string }> {
-  const stored = await getPriceHistory(company.id, { limit: 260 });
-  const closes = stored
-    .filter((b) => b.close !== null)
-    .map((b) => ({ date: b.date, close: Number(b.close) }));
-
-  // A few stored bars are not a year of history, and a year that ended weeks ago
-  // is not today's price; in either case the market-data provider is asked instead.
-  const lastStored = closes.at(-1)?.date;
-  const fresh = lastStored !== undefined && Date.now() - Date.parse(lastStored) < STALE_AFTER_DAYS * 86_400_000;
-  if (closes.length >= 60 && fresh) {
-    return { closes, source: "prices_daily", ref: "prices_daily table" };
-  }
-
-  try {
-    const chart = await fetchChart(company.ticker, "1y");
-    const live = chart.bars
-      .filter((b) => b.close !== null)
-      .map((b) => ({ date: b.date, close: b.close as number }));
-    const newer = (live.at(-1)?.date ?? "") > (lastStored ?? "");
-    if (live.length > closes.length || (newer && live.length >= 60)) {
-      return { closes: live, source: chart.source, ref: `${chart.source} daily closes, 1 year` };
-    }
-  } catch {
-    // unreachable — whatever is stored will have to do
-  }
-  return { closes, source: "prices_daily", ref: "prices_daily table" };
-}
 
 export interface PriceStats {
   return1m: number | null;

@@ -310,10 +310,6 @@ function Report({ report }: { report: RiskReport }) {
                 fall. Days to exit assume trading 10% of a stock&apos;s average daily dollar volume.
               </p>
               <p>Sources: {report.sources.join("; ")}.</p>
-              <p>
-                Ask the <Link href="/ask">Capital Copilot</Link> “which position carries the most risk?” or “what if
-                semiconductors fall 30%?” — it reads these same numbers.
-              </p>
             </div>
           </section>
         </div>

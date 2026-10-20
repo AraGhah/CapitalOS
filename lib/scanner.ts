@@ -173,7 +173,7 @@ export function passes(rule: ScreenRule, actual: number): boolean {
 }
 
 // "revenue_growth>=0.2; fcf_margin>0.1" — the form the custom screen travels in
-// through a URL, and the form the Copilot writes a strategy into.
+// through a URL.
 export function parseScreen(text: string): { rules: ScreenRule[]; errors: string[] } {
   const rules: ScreenRule[] = [];
   const errors: string[] = [];

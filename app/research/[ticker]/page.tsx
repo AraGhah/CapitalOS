@@ -18,6 +18,7 @@ import { listRuns } from "@/lib/ai/store";
 import { modeSpec } from "@/lib/ai/modes";
 import { Suspense } from "react";
 import { ChecklistPanel } from "@/app/components/ChecklistPanel";
+import { TechnicalPanel } from "@/app/components/TechnicalPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -180,6 +181,21 @@ export default async function ResearchPage({ params }: PageProps<"/research/[tic
 
         <div className="stack">
           <LivePrice ticker={company.ticker} fallback={storedBars} />
+
+          <Suspense
+            fallback={
+              <section className="panel" id="technicals">
+                <div className="panel-head">
+                  <h2>Technicals</h2>
+                </div>
+                <p className="missing" style={{ padding: "0.9rem" }}>
+                  Computing the indicators…
+                </p>
+              </section>
+            }
+          >
+            <TechnicalPanel ticker={company.ticker} />
+          </Suspense>
 
           <section className="panel">
             <div className="panel-head">

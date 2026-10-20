@@ -9,10 +9,7 @@ import { usePathname } from "next/navigation";
 const GROUPS = [
   {
     label: "Command",
-    links: [
-      { href: "/", label: "Command Center" },
-      { href: "/ask", label: "Capital Copilot" },
-    ],
+    links: [{ href: "/", label: "Command Center" }],
   },
   {
     label: "Discover",

@@ -82,7 +82,6 @@ export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>)
 export const LOCKS = {
   committeeBudget: (userId: string) => `committee-budget:${userId}`,
   dossierBudget: (userId: string) => `dossier-budget:${userId}`,
-  chatBudget: (userId: string) => `chat-budget:${userId}`,
   spend: (userId: string) => `spend:${userId}`,
   paperOrders: (userId: string) => `paper-orders:${userId}`,
   ledger: (accountId: string) => `ledger:${accountId}`,

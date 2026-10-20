@@ -15,6 +15,7 @@ import { getPortfolio } from "../lib/holdings";
 import { getPortfolioSeries } from "../lib/timeseries";
 import { getScores } from "../lib/scoring";
 import { buildChecklist } from "../lib/checklist-data";
+import { technicalRead, technicalSummary } from "../lib/technical-read";
 import { SECTION_NAMES, getFilingSection } from "../lib/filing-text";
 import { RESEARCH_FIELDS, addClaims, getResearchNote, type ResearchField } from "../lib/research";
 import { registerFilingSource } from "../lib/sources";
@@ -284,6 +285,26 @@ server.registerTool(
       companySource(company),
       { kind: "prices_daily", ref: `${company.ticker} ${bar.date}` },
     ]);
+  }
+);
+
+server.registerTool(
+  "technical_indicators",
+  {
+    title: "Technical indicators",
+    description:
+      "Moving averages (10-day EMA, 50- and 200-day SMA), RSI(14), MACD(12,26,9), Bollinger bands(20,2), ATR(14), VWMA(20) and " +
+      "volume against its recent average, computed by code from a year of daily bars, with the readings code draws from them " +
+      "(trend, RSI zone, MACD momentum, band position, recent crosses). Conventional thresholds, not predictions.",
+    inputSchema: { ticker: z.string() },
+  },
+  async ({ ticker }) => {
+    try {
+      const read = await technicalRead(ticker);
+      return reply(technicalSummary(read), [{ kind: "prices_daily", ref: read.ref }]);
+    } catch (err) {
+      return failed(`no price history for "${ticker}": ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 );
 

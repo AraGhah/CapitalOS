@@ -8,6 +8,8 @@ import { config } from "./config";
    - chat transcripts older than RETENTION_CHAT_DAYS
    - raw model output (kept for debugging a bad reply) after RETENTION_RAW_MODEL_TEXT_DAYS;
      the parsed output, tokens and costs stay
+   - outside-signal snapshots (StockTwits, Polymarket) after RETENTION_SIGNAL_DAYS; the
+     evidence pack of every run keeps the figures it read
    - expired and revoked sessions, old sign-in attempts
    - finished jobs and their event logs after 30 days
    - schedule slots after a week
@@ -36,6 +38,10 @@ export async function runRetention(): Promise<Record<string, number>> {
     loginAttempts: await run(`DELETE FROM login_attempts WHERE at < now() - interval '30 days'`),
     jobs: await run(
       `DELETE FROM jobs WHERE status IN ('succeeded', 'cancelled') AND finished_at < now() - interval '30 days'`
+    ),
+    signalSnapshots: await run(
+      `DELETE FROM signal_snapshots WHERE fetched_at < now() - make_interval(days => $1)`,
+      [c.RETENTION_SIGNAL_DAYS]
     ),
     scheduleSlots: await run(`DELETE FROM schedule_slots WHERE created_at < now() - interval '7 days'`),
     budgetReservations: await run(`DELETE FROM budget_reservations WHERE created_at < now() - interval '2 days'`),

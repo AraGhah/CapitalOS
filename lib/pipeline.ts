@@ -8,10 +8,10 @@ import { budgetRemaining, BudgetExhaustedError, reserveDossier } from "./llm";
 
 /* ---------------------------------------------------------------------------
    The desk pipeline — scout, analyst, strategist — in one place, for the
-   research page, the copilot's research_ticker tool and the job worker.
+   research page and the job worker.
 
-   One run per ticker at a time across every process: two clicks (or a click
-   and the copilot) on the same ticker would otherwise tag the same headlines
+   One run per ticker at a time across every process: two clicks
+   on the same ticker would otherwise tag the same headlines
    twice and pay for two strategist calls on identical evidence.
 --------------------------------------------------------------------------- */
 

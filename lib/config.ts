@@ -24,6 +24,7 @@ const list = z
 
 const MODES = ["fast", "standard", "deep", "committee"] as const;
 const FEEDS = ["gdelt", "google_news", "yahoo_finance", "hacker_news", "reddit"] as const;
+const SIGNALS = ["stocktwits", "polymarket"] as const;
 
 const schema = z
   .object({
@@ -58,7 +59,6 @@ const schema = z
 
     DAILY_DOSSIER_BUDGET: count(40),
     DAILY_CONSENSUS_BUDGET: count(12),
-    DAILY_CHAT_BUDGET: count(150),
     // Hard ceiling on metered model spend per user per day, in US dollars.
     DAILY_SPEND_USD_LIMIT: money(25),
     // Cost charged against the budget for a model with no price in models.json,
@@ -91,6 +91,20 @@ const schema = z
       .pipe(z.array(z.enum(FEEDS)))
       .default(["gdelt", "google_news", "hacker_news"]),
 
+    // Outside signals read into the committee's evidence pack: author-labelled
+    // StockTwits sentiment and Polymarket odds. Polymarket's Gamma API is a
+    // public read-only API; StockTwits is opt-in because its public stream
+    // answers only some clients and its terms are the user's to accept.
+    // An empty value counts as unset, so "none" is how both are switched off.
+    SIGNAL_FEEDS: z
+      .string()
+      .transform((v) => (v.toLowerCase() === "none" ? [] : v.split(",").map((s) => s.trim()).filter(Boolean)))
+      .pipe(z.array(z.enum(SIGNALS)))
+      .default(["polymarket"]),
+    // A fetched signal is reused for this long, so a re-run on the same day
+    // reads the same evidence and hits the committee's cache.
+    SIGNAL_TTL_MINUTES: z.coerce.number().int().min(1).max(1440).default(360),
+
     SNAPTRADE_CLIENT_ID: z.string().min(1).optional(),
     SNAPTRADE_CONSUMER_KEY: z.string().min(1).optional(),
     QUESTRADE_CLIENT_ID: z.string().min(1).optional(),
@@ -105,6 +119,7 @@ const schema = z
 
     RETENTION_CHAT_DAYS: count(180),
     RETENTION_RAW_MODEL_TEXT_DAYS: count(30),
+    RETENTION_SIGNAL_DAYS: count(180),
 
     // Which account the MCP server acts for. It never takes one from a caller.
     CAPITALOS_MCP_USER: z.string().email().optional(),

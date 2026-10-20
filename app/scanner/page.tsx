@@ -151,10 +151,6 @@ export default async function ScannerPage({ searchParams }: PageProps<"/scanner"
                 The scanner covers every company with annual filings on the desk. Add more by researching a ticker and
                 running <code>npm run ingest-edgar</code>, then <code>npm run compute-scores</code>.
               </p>
-              <p>
-                Or describe a strategy to the <Link href="/ask">Capital Copilot</Link> — it can turn “profitable
-                companies growing over 20% that have fallen 15% from their highs” into a screen and run it.
-              </p>
             </div>
           </section>
         </div>

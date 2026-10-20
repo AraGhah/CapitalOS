@@ -2,11 +2,10 @@
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
-import { PENDING_KEY } from "./AskTheDesk";
 
 // A ticker goes straight to its research page. Anything that is not shaped like a
-// ticker — a company name, a question — goes to the desk, which has tools for
-// looking things up by name.
+// ticker is left where it is, so a company name does not open a page for a
+// ticker that does not exist.
 const TICKER = /^[A-Za-z][A-Za-z0-9.\-]{0,9}$/;
 
 export function TickerSearch() {
@@ -16,21 +15,10 @@ export function TickerSearch() {
   function submit(e: FormEvent) {
     e.preventDefault();
     const query = value.trim();
-    if (!query) return;
+    if (!query || !TICKER.test(query)) return;
 
     setValue("");
-
-    if (TICKER.test(query)) {
-      router.push(`/research/${encodeURIComponent(query.toUpperCase())}`);
-    } else {
-      // The copilot only asks a question on arrival if this desk put it here.
-      try {
-        sessionStorage.setItem(PENDING_KEY, query);
-      } catch {
-        // storage blocked: the question still arrives, pre-filled, for one click
-      }
-      router.push(`/ask?q=${encodeURIComponent(query)}`);
-    }
+    router.push(`/research/${encodeURIComponent(query.toUpperCase())}`);
   }
 
   return (
@@ -42,8 +30,8 @@ export function TickerSearch() {
       <input
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        placeholder="Ticker, or ask a question"
-        aria-label="Look up a ticker, or ask the desk a question"
+        placeholder="Ticker"
+        aria-label="Look up a ticker"
         spellCheck={false}
         autoComplete="off"
       />

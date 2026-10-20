@@ -23,7 +23,7 @@ export default async function ProfilePage() {
       </div>
       <p className="subtle" style={{ marginBottom: "1rem", maxWidth: "48rem" }}>
         A stock can be an excellent business and still be the wrong investment for you. The pre-investment checklist on
-        every research page — and the Copilot, before it suggests any stock — checks these answers first. Amounts are in{" "}
+        every research page checks these answers first. Amounts are in{" "}
         {account.baseCurrency}, the currency your account reports in. Nothing leaves the desk.
       </p>
       <ProfileForm initial={profile} currency={account.baseCurrency} />

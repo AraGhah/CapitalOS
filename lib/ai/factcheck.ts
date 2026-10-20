@@ -72,8 +72,10 @@ const LABELS: RegExp[] = [
   /\b\d{4}-\d{2}-\d{2}\b/g,
   /\b10-[KQ]\b/gi,
   /\b(?:FY|Q)\s?\d{1,4}\b/gi,
-  /\b\d+\s?-?(?:year|yr|week|wk|month|mo|day|quarter|session)s?\b/gi,
+  /\b\d+\s?-?(?:year|yr|week|wk|month|mo|day|quarter|session|period)s?\b/gi,
   /\b(?:S&P|Russell)\s?\d+\b/gi,
+  // indicator settings: RSI(14), MACD(12,26,9), Bollinger Bands (20, 2)
+  /\b(?:RSI|ATR|MACD|SMA|EMA|VWMA|Bollinger(?:\s+bands?)?)\s*\(\s*\d+(?:\s*,\s*\d+(?:\.\d+)?)*\s*\)/gi,
 ];
 
 // The lookbehind keeps digits that are part of a word ("COVID-19", "A100") out.
@@ -128,7 +130,7 @@ export function extractFigures(text: string): Figure[] {
       // A bare number is a multiple, a rate, a count or a score. It is not a
       // dollar or share figure: "revenue of 281.7" without a unit or a scale
       // must not pass as $281.7 because some item happens to hold that amount.
-      candidates.push({ value, units: [undefined, "multiple", "percent", "count"], tolerance: half });
+      candidates.push({ value, units: [undefined, "multiple", "percent", "count", "index"], tolerance: half });
       // Percentiles are stored on a 0..1 scale and often written out of 100;
       // that reading is only allowed against a percentile.
       candidates.push({ value: value / 100, units: [undefined], tolerance: half / 100, labels: /percentile/i });
@@ -148,7 +150,7 @@ export function extractFigures(text: string): Figure[] {
 const RELATIVE_SLACK = 0.015;
 
 // Items whose sign means up or down rather than being part of a level.
-const CHANGE_LABEL = /growth|change|return|trend|drawdown|y\/y|year over year|below the 52-week high/i;
+const CHANGE_LABEL = /growth|change|return|trend|drawdown|y\/y|year over year|below the 52-week high|versus the/i;
 
 export function matches(figure: Figure, item: EvidenceItem): boolean {
   if (item.value === undefined) return false;

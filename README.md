@@ -22,8 +22,8 @@ npm run dev                           # serves http://127.0.0.1:3000 only
 | Variable | Needed for | Without it |
 | --- | --- | --- |
 | `DATABASE_URL` | everything | the app cannot start |
-| `SEC_USER_AGENT` | EDGAR and GDELT politeness | a default contact string is sent |
-| `ANTHROPIC_API_KEY` | the strategist's brief, and the chat | verdicts still come out, from the sentiment counts; the brief renders as missing and the chat is unavailable |
+| `SEC_USER_AGENT` | EDGAR, GDELT and FRED calls; SEC's fair-access policy asks for a real contact, e.g. `CapitalOS you@example.com` | those calls refuse to run until it is set |
+| `ANTHROPIC_API_KEY` | the strategist's brief, headline tagging and the Claude seats | verdicts still come out, from the sentiment counts; the brief renders as missing and the committee uses whichever other provider keys are set |
 | `ANTHROPIC_MODEL` | overriding the model | `claude-opus-5-5` |
 | `DAILY_DOSSIER_BUDGET` | capping spend | 40 pipeline runs per day, then runs stop |
 | `OPENAI_API_KEY` | hosted embeddings for event clustering | local hashed-token vectors |
@@ -36,7 +36,8 @@ npm run dev                           # serves http://127.0.0.1:3000 only
 | `AUTOPILOT_CRON` | how often `npm run autopilot` passes | every 30 minutes |
 | `AUTOPILOT_CONVENE=1` | letting the autopilot convene committees | alerts only, no model calls |
 | `AUTOPILOT_MAX_COMMITTEES`, `AUTOPILOT_MODE` | the autopilot's daily committee cap and mode | 3 a day, standard |
-| `DAILY_CHAT_BUDGET` | capping copilot questions | 150 a day, then the chat refuses |
+| `SIGNAL_FEEDS` | outside signals read into the committee's evidence: `polymarket`, `stocktwits` (comma-separated) | Polymarket only; `none` switches both off |
+| `SIGNAL_TTL_MINUTES` | how long a StockTwits or Polymarket reading is reused before it is fetched again | 360 |
 | `CAPITALOS_TOKEN` | requiring an access token | anyone who can reach the server is let in (it only listens on 127.0.0.1) |
 | `CAPITALOS_ALLOWED_HOSTS` | serving under another host name, e.g. a LAN IP | only `localhost`, `127.0.0.1` and `[::1]` are served |
 | `POSTGRES_PASSWORD` (shell, for `docker compose`) | a real database password | `capitalos`, with the port bound to 127.0.0.1 |
@@ -54,7 +55,6 @@ front of every page and route:
 - Writes from another site are refused (Origin / Sec-Fetch-Site), and write bodies
   must be `application/json`, so a web page cannot place trades, write the ledger
   or convene a committee on your behalf.
-- A question in an `/ask?q=` link is only pre-filled; it runs when you press Ask.
 - Opening `/research/<ticker>` for a symbol the desk has not seen only offers to
   add it; nothing is written until you press the button.
 
@@ -87,9 +87,11 @@ any research page. Nothing on that path needs a key.
 Intelligence Consensus from the product plan, built as five phases:
 
 1. **Evidence** — `lib/ai/evidence.ts` builds one pack from stored filings,
-   computed ratios, prices (Yahoo when nothing is stored), valuation multiples,
-   sector scores, headlines, sourced research notes, open theses, the position
-   and FRED macro. Every item gets an id (`E12`). Every model reads the same pack.
+   computed ratios, prices (Yahoo when nothing is stored), technical indicators,
+   valuation multiples, sector scores, headlines, outside signals (Polymarket
+   odds, StockTwits label counts), sourced research notes, open theses, the
+   position and FRED macro. Every item gets an id (`E12`). Every model reads the
+   same pack.
 2. **Blind analysis** — each analyst seat scores eight dimensions from −2 to +2
    and makes claims that must cite evidence ids. None sees another's answer. The
    committee mode adds six specialist seats (financial, valuation, industry,
@@ -137,8 +139,43 @@ chat chain, with ChatDev's communicative dehallucination as the synthesizer's
 revision loop. The ledger is metered per call, the way Modal meters compute
 rather than billing for idle capacity.
 
-The Capital Copilot (`/ask`) can convene a committee itself with the
-`convene_committee` tool.
+## Technical analysis and outside signals
+
+Ported from TauricResearch/TradingAgents' market analyst and data vendors, with
+the one change this desk requires: a model never produces a figure.
+
+`lib/technicals.ts` computes, from a year of daily bars, the 10-day EMA, the 50-
+and 200-day SMA, RSI(14), MACD(12,26,9), Bollinger bands(20,2), ATR(14), VWMA(20)
+and the last session's volume against the 20 before it, plus the readings code
+draws from them: trend, RSI zone, MACD momentum and slope, band position, and a
+golden or death cross (20 sessions) or MACD cross (10 sessions). The conventions
+are the textbook ones (Wilder smoothing for RSI and ATR, population deviation for
+the bands) and the thresholds are in `THRESHOLDS`; they are conventions, not
+predictions. A session still trading is left out, so a reading does not move
+with every refresh.
+
+The same figures reach you three ways: as numbered items in every committee's
+evidence pack (`lib/ai/technical-items.ts`, so the fact checker can test any
+indicator value a model writes), in the **Technicals** panel on each research
+page, and at `GET /api/technicals/<ticker>` and through the MCP server's
+`technical_indicators` tool.
+
+Two outside signals join the pack when `SIGNAL_FEEDS` allows them:
+
+- **Polymarket** (on by default): the implied probability of open, well-traded
+  markets that name the company, plus the Fed-cut and recession markets. Shown
+  as the crowd's odds, never as a forecast made here. Public read-only API.
+- **StockTwits** (opt-in, `SIGNAL_FEEDS=stocktwits,polymarket`): only the
+  bullish or bearish label each author put on their own post is counted, over
+  the 30 most recent. The posts are never read into the pack, so a stranger's
+  text cannot reach a model. Its public stream answers only some clients, and its
+  terms are yours to accept, so it is off until you turn it on.
+
+Neither can be asked for a past date. Each reading is stored in
+`signal_snapshots` and reused for `SIGNAL_TTL_MINUTES`, so two committee runs on
+the same morning read the same evidence and share a cache entry; snapshots older
+than `RETENTION_SIGNAL_DAYS` (180) are trimmed. A feed that is off, blocked or
+empty shows up in the pack's coverage line as not retrieved.
 
 ## The pre-investment checklist (`/profile`, every research page)
 
@@ -164,9 +201,8 @@ whatever the company looks like. The questions about you live on the investor
 profile (`/profile`, table `investor_profiles`); your reasons and exit rules live
 on a thesis. Every threshold is in the `T` table at the top of the file.
 
-The Copilot must call `pre_investment_check` before it suggests any stock, and
-screen and committee results remind it that they are not suggestions. The MCP
-server exposes the same tool. Interest coverage and dividend payout read
+The MCP server exposes the same check as `pre_investment_check`, and an agent
+using it must call it before suggesting any stock. Interest coverage and dividend payout read
 `interest_expense` and `dividends_paid`; run `npm run ingest-edgar` once to pick
 them up.
 
@@ -224,9 +260,11 @@ triggered it and, for held positions, the effect on the portfolio, and each
 event alerts once. Convening a committee is the only step that spends money, so
 it is off unless asked for and capped per day.
 
-The Capital Copilot reaches all of it: `portfolio_risk`, `run_scenario`,
-`market_regime`, `run_screen`, `run_backtest`, `paper_portfolio`, `get_alerts`
-and `convene_committee`, on top of the original news and quote tools.
+Each piece has its own page: risk and scenarios on `/risk`, the market regime
+on `/markets`, screens on `/scanner`, backtests on `/strategies`, paper trading
+on `/paper` and alerts on `/alerts`. There is no chat; the MCP server exposes
+the desk's data (positions, filings, prices, technicals, the pre-investment
+check) to an agent you run yourself.
 
 ```bash
 npm run selftest-risk         # risk arithmetic, then a live basket

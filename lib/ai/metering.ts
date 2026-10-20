@@ -4,7 +4,7 @@ import { config } from "../config";
 /* ---------------------------------------------------------------------------
    Spend, in dollars, per person per day.
 
-   Every model call — committee seats, the copilot, headline tagging, the
+   Every model call — committee seats, headline tagging, the
    strategist, the market brief — is a row in model_calls with its cost. Before
    a call is made the day's total is checked against DAILY_SPEND_USD_LIMIT.
 

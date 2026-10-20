@@ -201,7 +201,7 @@ export function costOf(spec: ModelSpec, usage: TokenUsage): { usd: number; estim
 }
 
 // The spec for an Anthropic model by its model id, for calls made outside the
-// committee (the copilot, the analyst, the strategist), so they are priced too.
+// committee (the analyst, the strategist), so they are priced too.
 export function specForModel(provider: string, model: string): ModelSpec | null {
   return availableModels().find((m) => m.provider === provider && m.model === model) ?? null;
 }
