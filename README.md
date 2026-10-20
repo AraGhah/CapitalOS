@@ -211,6 +211,27 @@ at the top of every finished committee run.
   10% of average daily dollar volume) and the position size on your profile; then
   scaled for conviction, an overweight (half) and a downtrend (half). Capital is
   what you hold plus the money you set aside to invest on `/profile`.
+- **Risk debate** (`lib/decision/risk-debate.ts`) is TradingAgents' aggressive,
+  conservative and neutral risk analysts, as three seats that hold the same
+  measured figures to different bars instead of three models arguing. The sizing
+  above looks at the stock and your capital; the debate looks at what you
+  already own, on a year of daily returns of your holdings with and without the
+  new money: how much the 1-day 95% loss of your whole book grows (as a share of
+  capital: 0.20% / 0.35% / 0.60% for the conservative / neutral / aggressive
+  seat), the beta to the S&P 500 of your whole capital (1.15 / 1.30 / 1.50; money
+  not yet invested counts as zero), how much of your capital sits in this stock
+  plus the holdings that move with it (correlation 0.6 / 0.7 / 0.8 or more; 25% /
+  35% / 50%), which catches two stocks in different sectors that behave as one
+  bet, and the sessions it takes to sell at 10% of volume (1 / 3 / 5). The
+  largest position inside a seat's bars is that seat's position: the full
+  proposal (approves), part of it (reduces), or none of the addition when less
+  than a quarter of it fits (rejects). A test the desk cannot measure is never a
+  free pass: the conservative and neutral seats keep only half and three quarters
+  of the addition for each one. The seat that matches your risk tolerance decides
+  (low follows the conservative seat, medium the neutral, high the aggressive;
+  unset is low): it can cut the size or turn the purchase into an avoid, and the
+  other two are shown as the range. It runs only for a purchase, and every bar
+  is a constant in that file.
 
 The result is one of seven actions: buy, add, hold, trim, sell, watch (not held,
 not a purchase) or avoid (not held, and something says stay out). The desk is
@@ -218,8 +239,9 @@ long-only: an underweight cuts a holding by half, a sell exits it, and neither
 ever opens a short.
 
 Nothing is stored until you press **Record this decision**; that keeps the exact
-inputs, the digest of them and the price they were drawn at in `decisions`
-(never trimmed, and it survives the run being deleted), writes a line to the
+inputs (including the rounded daily returns the risk debate ran on), the digest
+of them and the price they were drawn at in `decisions` (never trimmed, and it
+survives the run being deleted), writes a line to the
 journal and audits it. The same inputs record once. `GET
 /api/consensus/<run>/decision` computes it, `POST` records it, `GET
 /api/decisions?ticker=` lists what you recorded, and the MCP server's

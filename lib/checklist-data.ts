@@ -39,6 +39,8 @@ export interface GatheredChecklist {
   companyId: string;
   // shares of this company held now
   heldQty: number;
+  // everything held, market value in the base currency
+  holdings: Array<{ ticker: string; value: number }>;
 }
 
 export async function buildChecklist(
@@ -167,7 +169,12 @@ export async function gatherChecklist(
     cik: company.cik,
     latestAnnualFiling: annual ? { form: annual.formType, filedAt: annual.filedAt } : null,
   };
-  return { input, companyId: company.id, heldQty: held?.qty.toNumber() ?? 0 };
+  return {
+    input,
+    companyId: company.id,
+    heldQty: held?.qty.toNumber() ?? 0,
+    holdings: portfolio.holdings.map((h) => ({ ticker: h.ticker, value: h.marketValue.toNumber() })),
+  };
 }
 
 async function sectorValue(holdings: Array<{ companyId: string; value: number }>, sector: string): Promise<number> {

@@ -85,6 +85,12 @@ export interface Multiplier {
   reason: string;
 }
 
+export interface FinalCap {
+  name: string;
+  // the most the position may be after every other rule, base currency
+  limit: number;
+}
+
 export interface Sizing {
   capital: number | null;
   constraints: Constraint[];
@@ -92,6 +98,8 @@ export interface Sizing {
   binding: string | null;
   baseTarget: number | null;
   multipliers: Multiplier[];
+  // a ceiling applied to the finished position, after the factors (the risk debate's)
+  finalCap: FinalCap | null;
   // the position the plan asks for, base currency and share of capital
   targetValue: number | null;
   targetWeight: number | null;
@@ -114,6 +122,7 @@ function empty(input: SizingInput): Sizing {
     binding: null,
     baseTarget: null,
     multipliers: [],
+    finalCap: null,
     targetValue: null,
     targetWeight: null,
     currentValue: input.heldValue,
@@ -250,4 +259,21 @@ export function sizePosition(input: SizingInput): Sizing {
   if (out.deltaValue <= 0) out.notes.push("You already hold at least the size this plan asks for.");
 
   return out;
+}
+
+// Applies a ceiling to a finished buy, and works out the shares again at the same
+// entry. A cap at or above the position changes nothing.
+export function capSizing(sizing: Sizing, cap: FinalCap, entry: number | null, fxToBase: number | null): Sizing {
+  if (sizing.targetValue === null || cap.limit >= sizing.targetValue) return sizing;
+  const targetValue = cap.limit;
+  const deltaValue = targetValue - sizing.currentValue;
+  const priced = entry !== null && entry > 0 && fxToBase !== null && fxToBase > 0;
+  return {
+    ...sizing,
+    finalCap: cap,
+    targetValue,
+    targetWeight: sizing.capital && sizing.capital > 0 ? targetValue / sizing.capital : sizing.targetWeight,
+    deltaValue,
+    shares: priced ? Math.max(0, Math.floor(deltaValue / ((entry as number) * (fxToBase as number)))) : sizing.shares,
+  };
 }

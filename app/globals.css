@@ -2013,6 +2013,62 @@ tr.voided td .pill {
   color: var(--down);
 }
 
+/* the three risk seats side by side: one row per test, one column per seat */
+.seat-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.seat-table th,
+.seat-table td {
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.seat-table thead th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.seat-table th.deciding {
+  color: var(--accent);
+}
+
+.seat-table td.deciding {
+  background: var(--accent-soft);
+}
+
+.seat-table .within {
+  color: var(--up);
+}
+
+.seat-table .close {
+  color: var(--warn);
+}
+
+.seat-table .over {
+  color: var(--down);
+}
+
+.seat-table .unmeasured {
+  color: var(--muted);
+}
+
+.seat-notes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.75rem;
+}
+
+.seat-notes ul {
+  margin: 0.25rem 0 0.5rem;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+}
+
 .profile-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));

@@ -187,7 +187,10 @@ server.registerTool(
     description:
       "What to do about a stock after a finished committee, for the person this server acts for: a five-tier rating " +
       "(buy, overweight, hold, underweight, sell), an action (buy, add, hold, trim, sell, watch, avoid), a plan with " +
-      "an entry, a stop and reward levels, and a size in shares. Computed by code from the committee's scores, the " +
+      "an entry, a stop and reward levels, and a size in shares. For a purchase it also holds a risk debate: three risk " +
+      "seats (conservative, neutral, aggressive) test the position against what the person already holds (the loss it " +
+      "adds on a bad day, market sensitivity, overlap with correlated holdings, time to exit), and the seat that matches " +
+      "their risk tolerance can shrink the position or turn it away. Computed by code from the committee's scores, the " +
       "person's pre-investment checklist, profile and portfolio; no model is called and nothing is written. The reward " +
       "levels are planning arithmetic, not price predictions. Needs the id of a finished committee run.",
     inputSchema: { runId: z.string().uuid() },
@@ -197,7 +200,7 @@ server.registerTool(
       const { decision, hash } = await decideForRun(actor, runId);
       return reply({ decision, inputsHash: hash }, [
         { kind: "consensus_run", ref: runId },
-        { kind: "prices_daily", ref: "one year of daily closes" },
+        { kind: "prices_daily", ref: "one year of daily closes of the stock and of what you hold" },
       ]);
     } catch (err) {
       return failed(err instanceof Error ? err.message : "the decision could not be worked out");

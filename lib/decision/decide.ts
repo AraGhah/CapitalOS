@@ -3,15 +3,19 @@ import type { RiskTolerance } from "../profile-fields";
 import type { TechnicalSnapshot } from "../technicals";
 import { tradePlan, type PlanSide, type TradePlan } from "./plan";
 import { RATING_LABEL, rate, type RatingInput, type RatingResult } from "./rating";
-import { sizePosition, type Sizing } from "./sizing";
+import { BINDING_LABEL, objection, riskDebate as debate, type RiskBook, type RiskDebate } from "./risk-debate";
+import { capSizing, sizePosition, type Sizing } from "./sizing";
 
 /* ---------------------------------------------------------------------------
    The Portfolio Manager: the final call on one stock for one person.
 
    It takes the rating the committee's numbers earn (rating.ts), puts it
    through the person's own pre-investment checklist and open thesis, asks the
-   Trader for a plan (plan.ts) and sizes it against the person's capital and
-   risk tolerance (sizing.ts). The answer is one of seven actions:
+   Trader for a plan (plan.ts), sizes it against the person's capital and
+   risk tolerance (sizing.ts), and, when that is a purchase, has the three risk
+   seats argue it against what the person already owns (risk-debate.ts); the
+   seat that matches their risk tolerance can shrink it or stand in its way.
+   The answer is one of seven actions:
 
      buy / add    new money, with a size, an entry and a stop
      hold         nothing to do (including: the plan asks for what you hold)
@@ -73,6 +77,8 @@ export interface DecisionInput {
   volatility: number | null;
   maxDrawdown: number | null;
   avgDollarVolume: number | null;
+  // a year of the portfolio's daily returns for the risk debate; null skips the debate
+  book: RiskBook | null;
 }
 
 export interface Decision {
@@ -90,6 +96,8 @@ export interface Decision {
   cautions: string[];
   plan: TradePlan;
   sizing: Sizing;
+  // the three risk seats' arguments; null when the decision was not a purchase, or no book was given
+  riskDebate: RiskDebate | null;
   checklist: ChecklistDigest | null;
   currency: { listing: string; base: string; fxToBase: number | null };
 }
@@ -129,46 +137,91 @@ export function decide(input: DecisionInput): Decision {
       cautions.push(`The checklist found material risks (${input.checklist.risks.join(", ").toLowerCase()}), so the size is halved.`);
     }
   }
-  const blocked = positive && blockers.length > 0;
-
-  const side: PlanSide = positive ? (blocked ? "none" : "enter") : (final === "underweight" || final === "sell") && held ? "exit" : "none";
-  const plan = tradePlan({ side, snapshot: input.technical, last: input.last });
-
   const capital = input.portfolio.holdingsValue + (input.profile.investableAmount ?? 0);
   const affordableLoss =
     input.profile.maxLossShare !== null && input.profile.investableAmount !== null ? input.profile.maxLossShare * input.profile.investableAmount : null;
-  const sizing = sizePosition({
-    // a blocked buy sizes as a hold: keep what is held, add nothing
-    rating: blocked ? "hold" : final,
-    confidence: input.rating.confidence.label,
-    tolerance: input.profile.tolerance,
-    capital: capital > 0 ? capital : null,
-    heldValue: input.portfolio.heldValue,
-    heldQty: input.portfolio.heldQty,
-    sectorValue: input.portfolio.sectorValue,
-    plannedSize: input.profile.plannedSize,
-    affordableLoss,
-    stress: stressLoss(input.volatility, input.maxDrawdown),
-    entry: plan.entry?.price ?? null,
-    riskShare: plan.riskShare,
-    avgDollarVolume: input.avgDollarVolume,
-    fxToBase: input.fxToBase,
-    checklist: input.checklist?.level ?? null,
-    downtrend: plan.downtrend,
-  });
+  const stress = stressLoss(input.volatility, input.maxDrawdown);
 
-  // ---- the action
-  let action: Action;
-  if (positive) {
-    if (blocked) action = held ? "hold" : "avoid";
-    else if (sizing.shares !== null && sizing.shares >= 1) action = held ? "add" : "buy";
-    else action = held ? "hold" : "watch";
-  } else if (final === "hold") {
-    action = held ? "hold" : "watch";
-  } else if (final === "underweight") {
-    action = held ? (sizing.shares !== null && sizing.shares < 0 ? "trim" : "hold") : "avoid";
-  } else {
-    action = held ? "sell" : "avoid";
+  // The plan, the size and the action, given whether a buy is blocked.
+  const settle = (blocked: boolean) => {
+    const side: PlanSide = positive ? (blocked ? "none" : "enter") : (final === "underweight" || final === "sell") && held ? "exit" : "none";
+    const plan = tradePlan({ side, snapshot: input.technical, last: input.last });
+    const sizing = sizePosition({
+      // a blocked buy sizes as a hold: keep what is held, add nothing
+      rating: blocked ? "hold" : final,
+      confidence: input.rating.confidence.label,
+      tolerance: input.profile.tolerance,
+      capital: capital > 0 ? capital : null,
+      heldValue: input.portfolio.heldValue,
+      heldQty: input.portfolio.heldQty,
+      sectorValue: input.portfolio.sectorValue,
+      plannedSize: input.profile.plannedSize,
+      affordableLoss,
+      stress,
+      entry: plan.entry?.price ?? null,
+      riskShare: plan.riskShare,
+      avgDollarVolume: input.avgDollarVolume,
+      fxToBase: input.fxToBase,
+      checklist: input.checklist?.level ?? null,
+      downtrend: plan.downtrend,
+    });
+
+    let action: Action;
+    if (positive) {
+      if (blocked) action = held ? "hold" : "avoid";
+      else if (sizing.shares !== null && sizing.shares >= 1) action = held ? "add" : "buy";
+      else action = held ? "hold" : "watch";
+    } else if (final === "hold") {
+      action = held ? "hold" : "watch";
+    } else if (final === "underweight") {
+      action = held ? (sizing.shares !== null && sizing.shares < 0 ? "trim" : "hold") : "avoid";
+    } else {
+      action = held ? "sell" : "avoid";
+    }
+    return { plan, sizing, action };
+  };
+
+  let blocked = positive && blockers.length > 0;
+  let { plan, sizing, action } = settle(blocked);
+
+  // ---- the risk debate: only a purchase has anything to argue about
+  let riskDebate: RiskDebate | null = null;
+  if (input.book && (action === "buy" || action === "add") && sizing.targetValue !== null && capital > 0) {
+    const proposed = sizing.targetValue;
+    const debated = debate({
+      ticker: input.ticker,
+      base: input.baseCurrency,
+      book: input.book,
+      capital,
+      held: input.portfolio.heldValue,
+      proposed,
+      avgDollarVolume: input.avgDollarVolume,
+      fxToBase: input.fxToBase,
+      tolerance: input.profile.tolerance,
+      facts: {
+        rating: final,
+        composite: result.composite,
+        confidence: input.rating.confidence.label,
+        volatility: input.volatility,
+        maxDrawdown: input.maxDrawdown,
+        stress,
+        rsi: input.technical?.rsi14 ?? null,
+        trend: input.technical?.readings.trend ?? null,
+      },
+    });
+    riskDebate = debated;
+    const seat = debated.seats.find((s) => s.seat === debated.deciding);
+    if (debated.stance === "reject") {
+      blockers.push(objection(debated));
+      blocked = true;
+      ({ plan, sizing, action } = settle(true));
+    } else if (debated.stance === "reduce" && seat) {
+      cautions.push(
+        `The ${debated.deciding} risk seat, which follows your risk tolerance, cut the position from ${money(proposed)} to ${money(debated.value)} ${input.baseCurrency}: ${BINDING_LABEL[seat.binding ?? "unmeasured"]}.`
+      );
+      sizing = capSizing(sizing, { name: `${debated.deciding} risk seat`, limit: debated.value }, plan.entry?.price ?? null, input.fxToBase);
+      if (sizing.shares === null || sizing.shares < 1) action = held ? "hold" : "watch";
+    }
   }
 
   if (positive && !blocked && action !== "buy" && action !== "add") {
@@ -195,6 +248,7 @@ export function decide(input: DecisionInput): Decision {
     cautions,
     plan,
     sizing,
+    riskDebate,
     checklist: input.checklist,
     currency: { listing: input.listingCurrency, base: input.baseCurrency, fxToBase: input.fxToBase },
   };

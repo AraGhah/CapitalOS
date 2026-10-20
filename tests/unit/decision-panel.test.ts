@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { decide } from "../../lib/decision/decide";
 import type { RecordedDecision } from "../../lib/decision/store";
-import { baseInput, dims, strongCommittee } from "./decision-fixtures";
+import { baseInput, dims, dropOn, measuredBook, strongCommittee } from "./decision-fixtures";
 
 // The panel's data layer and its client button are not what is under test.
 vi.mock("@/lib/decision/data", () => ({ decideForRun: async () => ({}) }));
@@ -83,5 +83,54 @@ describe("DecisionView", () => {
 
   it("links to the checklist it was judged against", () => {
     expect(render(decide(baseInput()))).toContain('href="/research/TEST#checklist"');
+  });
+
+  it("shows no risk debate when there was none", () => {
+    expect(render(decide(baseInput()))).not.toContain("The risk debate");
+  });
+
+  describe("the risk debate", () => {
+    // a stock whose bad day is 8%: the conservative seat cuts the position, the neutral seat (medium tolerance) too
+    const debated = () => decide(baseInput({ avgDollarVolume: 5_000_000, book: measuredBook({ candidate: dropOn(0.08), market: dropOn(0.08) }) }));
+
+    it("sets the three seats side by side, with the person's own lit and the position each would take", () => {
+      const html = render(debated());
+      expect(html).toContain("The risk debate");
+      expect(html).toContain("Conservative");
+      expect(html).toContain("Neutral · yours");
+      expect(html).toContain("Aggressive");
+      expect(html).toContain("Loss on a bad day");
+      expect(html).toContain("Market sensitivity");
+      expect(html).toContain("Overlap with your holdings");
+      expect(html).toContain("Time to exit");
+      expect(html).toContain("96 shared sessions to 2026-10-20");
+      // 8,000 × 8% = 640 = 0.64% of 100,000, against the 0.20 / 0.35 / 0.60% bars
+      expect(html).toContain("0.64%");
+      expect(html).toContain("bar 0.35%");
+      expect(html).toContain("Reduces");
+      expect(html).toContain("Approves");
+    });
+
+    it("says what the size was cut to and why", () => {
+      const html = render(debated());
+      expect(html).toContain("Cut by the neutral risk seat to");
+      expect(html).toContain("4,375 USD");
+      expect(html).toContain("the loss it adds on a bad day");
+    });
+
+    it("lays out each seat's case, for and against, the person's seat open", () => {
+      const html = render(debated());
+      expect(html).toContain("<strong>For</strong>");
+      expect(html).toContain("<strong>Against</strong>");
+      expect(html).toContain("rate TEST Buy");
+      // only the person's own seat is open by default
+      expect(html.match(/<details open=""/g)?.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("says plainly when the portfolio could not be measured", () => {
+      const html = render(decide(baseInput({ book: { status: "unmeasured", reason: "no price history could be loaded for TEST" } })));
+      expect(html).toContain("The portfolio could not be measured: no price history could be loaded for TEST.");
+      expect(html).toContain("not measured");
+    });
   });
 });

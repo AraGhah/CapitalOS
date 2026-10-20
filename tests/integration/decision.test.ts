@@ -1,3 +1,4 @@
+import Decimal from "decimal.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GET as getDecisionRoute, POST as postDecisionRoute } from "../../app/api/consensus/[id]/decision/route";
 import { GET as listDecisionsRoute } from "../../app/api/decisions/route";
@@ -8,6 +9,7 @@ import type { ConsensusReport } from "../../lib/ai/report";
 import { pool } from "../../lib/db";
 import { decideForRun } from "../../lib/decision/data";
 import { getDecision, listDecisions, recordDecision } from "../../lib/decision/store";
+import { recordTransaction } from "../../lib/ledger";
 import { saveProfile } from "../../lib/profile";
 import { call, count, signedInUser, type TestUser } from "./helpers";
 import { company } from "./db";
@@ -167,6 +169,110 @@ describe("deciding on a finished committee", () => {
       evidence: { ticker: "RUNN", name: "RUNN Inc", sector: null, industry: null, generatedAt: "", periodEnd: null, items: [], coverage: { inputs: [], present: 0, expected: 0 }, hash: "h" },
     });
     await expect(decideForRun(owner, running)).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+describe("the risk debate on a real portfolio", () => {
+  // The same seeded closes for every company, so a holding moves exactly with the stock under review, and a
+  // different sector, so only the risk debate (not the sector cap) can see that the two behave as one bet.
+  async function holdingCorrelatedWith(u: TestUser, ticker: string, shares: number) {
+    const heldId = await company(ticker, { sector: "Energy" });
+    await seedPrices(heldId);
+    await recordTransaction(u, {
+      companyId: heldId,
+      ticker,
+      side: "buy",
+      qty: new Decimal(shares),
+      price: new Decimal(100),
+      fees: new Decimal(0),
+      executedAt: new Date(Date.now() - 200 * 86_400_000),
+    });
+  }
+
+  it("reads the holdings' prices, argues the purchase against them, and the seats split on the overlap", async () => {
+    const u = await signedInUser();
+    const { runId, companyId } = await finishedRun(u, "DBTE");
+    await seedPrices(companyId);
+    // about 71,000 of a stock that moves exactly with DBTE, and 100,000 set aside: capital about 171,000
+    await holdingCorrelatedWith(u, "HELD", 400);
+    await saveProfile(u, { investableAmount: 100_000, riskTolerance: "medium" });
+
+    const { decision, input } = await decideForRun(u, runId);
+
+    expect(input.book?.status).toBe("measured");
+    const debate = decision.riskDebate;
+    expect(debate).not.toBeNull();
+    expect(debate?.measured).toBe(true);
+    expect(debate?.window?.sessions).toBeGreaterThan(200);
+    expect(debate?.deciding).toBe("neutral");
+    // HELD is about 41% of capital and moves with the stock (correlation 1): the conservative and neutral
+    // seats' bars (25%, 35%) leave no room, the aggressive seat's (50%) does
+    expect(debate?.seats.map((s) => s.stance)).toEqual(["reject", "reject", "approve"]);
+    const overlap = debate?.seats[1].tests.find((t) => t.key === "overlap");
+    expect(overlap?.status).toBe("over");
+    expect(overlap?.note).toContain("HELD (1.00) moves with it");
+    // the person's seat is the neutral one, so the purchase is turned away, and the reason is stated
+    expect(decision.action).toBe("avoid");
+    expect(decision.blockers.join(" ")).toContain("the neutral risk seat");
+    expect(decision.plan.side).toBe("none");
+    expect(decision.sizing.shares).toBe(0);
+  });
+
+  it("is a purchase for someone whose tolerance matches the aggressive seat", async () => {
+    const u = await signedInUser();
+    const { runId, companyId } = await finishedRun(u, "DBTE");
+    await seedPrices(companyId);
+    await holdingCorrelatedWith(u, "HELD", 400);
+    await saveProfile(u, { investableAmount: 100_000, riskTolerance: "high" });
+
+    const { decision } = await decideForRun(u, runId);
+
+    expect(decision.riskDebate?.deciding).toBe("aggressive");
+    expect(decision.riskDebate?.stance).toBe("approve");
+    expect(decision.action).toBe("buy");
+    expect(decision.sizing.shares).toBeGreaterThan(0);
+  });
+
+  it("keeps the arguments with the recorded decision, and the returns they were made on", async () => {
+    const u = await signedInUser();
+    const { runId, companyId } = await finishedRun(u, "DBTE");
+    await seedPrices(companyId);
+    await holdingCorrelatedWith(u, "HELD", 400);
+    await saveProfile(u, { investableAmount: 100_000, riskTolerance: "medium" });
+
+    const gathered = await decideForRun(u, runId);
+    const saved = await recordDecision(u, gathered);
+    const stored = await getDecision(u.userId, saved.id);
+
+    expect(stored?.decision.riskDebate?.seats).toHaveLength(3);
+    expect(stored?.decision).toEqual(JSON.parse(JSON.stringify(gathered.decision)));
+    expect(stored?.input.book).toMatchObject({ status: "measured", others: [{ ticker: "HELD" }] });
+  });
+
+  it("prices in a stock with no price history instead of passing it", async () => {
+    const u = await signedInUser();
+    const { runId } = await finishedRun(u, "NOBR");
+    await saveProfile(u, { investableAmount: 100_000, riskTolerance: "medium" });
+
+    const { decision, input } = await decideForRun(u, runId);
+
+    expect(input.book).toEqual({ status: "unmeasured", reason: "no price history could be loaded for NOBR" });
+    // with no price there is no plan to size, so there is nothing to debate; the gap is still on the record
+    expect(decision.action).toBe("watch");
+    expect(decision.riskDebate).toBeNull();
+  });
+
+  it("does not read the portfolio's prices for a decision that is not a purchase", async () => {
+    const u = await signedInUser();
+    const { runId, companyId } = await finishedRun(u, "DBTE", -2);
+    await seedPrices(companyId);
+    await saveProfile(u, { investableAmount: 100_000 });
+
+    const { decision, input } = await decideForRun(u, runId);
+
+    expect(decision.rating.final).toBe("sell");
+    expect(input.book).toBeNull();
+    expect(decision.riskDebate).toBeNull();
   });
 });
 

@@ -4,11 +4,14 @@ import { decideForRun } from "@/lib/decision/data";
 import { ACTION_LABEL, type Action, type Decision } from "@/lib/decision/decide";
 import { PLAN_RULES } from "@/lib/decision/plan";
 import { RATINGS, RATING_LABEL, RATING_MEANING, RATING_RULES, WEIGHTS, type DecisionRating } from "@/lib/decision/rating";
+import { SEAT_LABEL, SEAT_RULES, type RiskDebate, type SeatTest, type Stance } from "@/lib/decision/risk-debate";
 import { listDecisions, type RecordedDecision } from "@/lib/decision/store";
 import { RecordDecision } from "@/app/components/RecordDecision";
 
 const ACTION_TONE: Record<Action, string> = { buy: "good", add: "good", hold: "info", watch: "info", trim: "warn", sell: "bad", avoid: "bad" };
 const RATING_TONE: Record<DecisionRating, string> = { buy: "up", overweight: "up", hold: "", underweight: "down", sell: "down" };
+const STANCE_TONE: Record<Stance, string> = { approve: "good", reduce: "warn", reject: "bad" };
+const STANCE_LABEL: Record<Stance, string> = { approve: "Approves", reduce: "Reduces", reject: "Rejects" };
 
 const num = (n: number, digits = 2) => n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const whole = (n: number) => Math.round(n).toLocaleString("en-US");
@@ -26,6 +29,124 @@ function Row({ label, value, note }: { label: string; value: string; note?: stri
         {value}
       </td>
     </tr>
+  );
+}
+
+function figure(t: SeatTest, which: "value" | "limit"): string {
+  const x = which === "value" ? t.value : t.limit;
+  if (x === null) return "not measured";
+  switch (t.key) {
+    case "bad_day":
+      return pct(x, 2);
+    case "market":
+      return x.toFixed(2);
+    case "overlap":
+      return pct(x, 0);
+    case "exit":
+      return `${x.toFixed(which === "value" ? 1 : 0)} ${x === 1 ? "session" : "sessions"}`;
+  }
+}
+
+const STATUS_WORD: Record<SeatTest["status"], string> = { within: "within", close: "close", over: "over", unmeasured: "" };
+
+// The three risk seats: one column each, one row per test, the person's own seat lit.
+function RiskDebateView({ debate, base }: { debate: RiskDebate; base: string }) {
+  const rows = debate.seats[0].tests;
+  return (
+    <div>
+      <h3>The risk debate</h3>
+      <p>{debate.summary}</p>
+      {debate.warnings.map((w, i) => (
+        <p key={i} className="missing">
+          {w}
+        </p>
+      ))}
+      <div style={{ overflowX: "auto" }}>
+        <table className="seat-table">
+          <thead>
+            <tr>
+              <th scope="col">
+                <span className="subtle">
+                  {debate.window ? `${debate.window.sessions} shared sessions to ${debate.window.asOf}` : "not measured"}
+                </span>
+              </th>
+              {debate.seats.map((s) => (
+                <th key={s.seat} scope="col" className={s.seat === debate.deciding ? "deciding" : undefined}>
+                  {SEAT_LABEL[s.seat]}
+                  {s.seat === debate.deciding && " · yours"}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={row.key}>
+                <th scope="row">{row.label}</th>
+                {debate.seats.map((s) => {
+                  const t = s.tests[i];
+                  return (
+                    <td key={s.seat} className={s.seat === debate.deciding ? "deciding" : undefined}>
+                      <span className={`num ${t.status}`}>{figure(t, "value")}</span>
+                      <span className="subtle">
+                        {" "}
+                        · bar {figure(t, "limit")}
+                        {STATUS_WORD[t.status] && ` · ${STATUS_WORD[t.status]}`}
+                      </span>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+            <tr>
+              <th scope="row">Position</th>
+              {debate.seats.map((s) => (
+                <td key={s.seat} className={s.seat === debate.deciding ? "deciding" : undefined}>
+                  <span className={`pill ${STANCE_TONE[s.stance]}`}>{STANCE_LABEL[s.stance]}</span>{" "}
+                  <span className="num">
+                    {whole(s.value)} {base}
+                  </span>
+                </td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div className="seat-notes">
+        {debate.seats.map((s) => (
+          <details key={s.seat} open={s.seat === debate.deciding} className="why-box">
+            <summary>
+              {SEAT_LABEL[s.seat]}: {s.verdict}
+            </summary>
+            {s.for.length > 0 && (
+              <>
+                <strong>For</strong>
+                <ul>
+                  {s.for.map((line, i) => (
+                    <li key={i}>{line}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {s.against.length > 0 && (
+              <>
+                <strong>Against</strong>
+                <ul>
+                  {s.against.map((line, i) => (
+                    <li key={i}>{line}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </details>
+        ))}
+      </div>
+      <p className="subtle">
+        The seat that matches your risk tolerance decides; the other two are the range around it. Each seat holds the same measured figures to its own bars (a bad
+        day may add {pct(SEAT_RULES.conservative.badDay, 2)}, {pct(SEAT_RULES.neutral.badDay, 2)} or {pct(SEAT_RULES.aggressive.badDay, 2)} of your capital, for
+        the conservative, neutral and aggressive seat), and a test the desk could not measure takes part of the addition off for the cautious seats rather than
+        passing for free. Every bar is in <code>lib/decision/risk-debate.ts</code>.
+      </p>
+    </div>
   );
 }
 
@@ -140,6 +261,9 @@ export function DecisionView({ decision, history, runId }: { decision: Decision;
                 {sizing.multipliers.map((m) => (
                   <Row key={m.name} label={`× ${m.factor}  ${m.name}`} value="" note={m.reason} />
                 ))}
+                {sizing.finalCap && (
+                  <Row label={`Cut by the ${sizing.finalCap.name} to`} value={`${whole(sizing.finalCap.limit)} ${base}`} note="see the risk debate below" />
+                )}
                 <Row label="Position the plan asks for" value={`${whole(sizing.targetValue)} ${base}`} note={sizing.targetWeight !== null ? `${pct(sizing.targetWeight)} of your capital` : undefined} />
                 <Row label="You hold now" value={`${whole(sizing.currentValue)} ${base}`} />
                 {sizing.shares !== null && <Row label={sizing.shares < 0 ? "Shares to sell" : "Shares to buy"} value={String(Math.abs(sizing.shares))} />}
@@ -147,6 +271,8 @@ export function DecisionView({ decision, history, runId }: { decision: Decision;
             </table>
           </div>
         )}
+
+        {decision.riskDebate && <RiskDebateView debate={decision.riskDebate} base={base} />}
 
         {unique.length > 0 && (
           <ul>

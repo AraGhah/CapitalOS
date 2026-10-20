@@ -1,5 +1,6 @@
 import type { DecisionInput } from "../../lib/decision/decide";
 import type { RatingDimension } from "../../lib/decision/rating";
+import type { RiskBook } from "../../lib/decision/risk-debate";
 import type { DimensionKey } from "../../lib/ai/roster";
 import type { TechnicalSnapshot } from "../../lib/technicals";
 
@@ -88,6 +89,34 @@ export function baseInput(overrides: Partial<DecisionInput> = {}): DecisionInput
     volatility: null,
     maxDrawdown: null,
     avgDollarVolume: null,
+    // no book: these inputs test the decision before the risk debate
+    book: null,
     ...overrides,
+  };
+}
+
+/* ---------------------------------------------------------------------------
+   Return series built so every risk figure can be worked out by hand.
+
+   SESSIONS = 96. dropOn(d, k) loses d on the six sessions where t % 16 === k and
+   gains 1% on the other ninety, so the 1-day 95% loss (the 5th worst of 96, with
+   six sessions tied for worst) is exactly d.
+--------------------------------------------------------------------------- */
+
+export const SESSIONS = 96;
+export const dropOn = (drop: number, phase = 0) => Array.from({ length: SESSIONS }, (_, t) => (t % 16 === phase ? -drop : 0.01));
+
+// A measured book of an empty portfolio and a stock whose bad day is 4%; its market series has
+// the same shape, so the stock's beta is 1.
+export function measuredBook(over: Partial<Extract<RiskBook, { status: "measured" }>> = {}): RiskBook {
+  return {
+    status: "measured",
+    asOf: "2026-10-20",
+    sessions: SESSIONS,
+    candidate: dropOn(0.04),
+    others: [],
+    market: dropOn(0.04),
+    skipped: [],
+    ...over,
   };
 }
