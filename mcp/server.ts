@@ -19,6 +19,7 @@ import { decideForRun } from "../lib/decision/data";
 import { earningsRead } from "../lib/earnings/data";
 import { benchmarkSummary } from "../lib/sentiment/benchmark";
 import { sentimentStudy } from "../lib/sentiment/data";
+import { planCheckData, readTrackRecord } from "../lib/track/data";
 import { lensRead } from "../lib/personas/data";
 import { technicalRead, technicalSummary } from "../lib/technical-read";
 import { SECTION_NAMES, getFilingSection } from "../lib/filing-text";
@@ -395,6 +396,34 @@ server.registerTool(
       ]);
     } catch (err) {
       return failed(`the earnings drift could not be read for "${ticker}": ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+);
+
+server.registerTool(
+  "decision_track_record",
+  {
+    title: "Decision track record",
+    description:
+      "How the person's recorded decisions have turned out. Each decision is measured at 5, 20 and 60 sessions after the close it was " +
+      "drawn from: the stock's return, the S&P 500's over the same sessions, and the difference. A Buy or Overweight is right when the " +
+      "stock beat the market and an Underweight or Sell when it trailed it, past a noise band that widens with the horizon; a Hold makes " +
+      "no call and is measured only. Returns the hit rate per horizon with a 95% interval and a comparison with a coin toss (declined " +
+      "below 10 decided calls), how the plans' stops and reward levels fared, and the recent calls with the plain sentences the stored " +
+      "record supports. With a ticker it narrows to that stock. Also returns the plan check: the same stop and reward arithmetic walked " +
+      "through the stored price history of the desk's stocks. The intervals assume independent calls, which calls made in the same " +
+      "market are not. Describes the past; not a forecast. Computed by code from stored closes; no model is called.",
+    inputSchema: { ticker: z.string().optional() },
+  },
+  async ({ ticker }) => {
+    try {
+      const wanted = ticker ? ticker.toUpperCase() : undefined;
+      return reply({ record: await readTrackRecord(actor.userId, { ticker: wanted }), planCheck: await planCheckData() }, [
+        { kind: "decision_outcomes", ref: wanted ? `${wanted} decisions` : "every recorded decision" },
+        { kind: "prices_daily", ref: "stored closes of the stocks decided on, and the S&P 500" },
+      ]);
+    } catch (err) {
+      return failed(`the track record could not be read: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 );

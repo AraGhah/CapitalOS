@@ -51,6 +51,7 @@ const GROUPS = [
       { href: "/alerts", label: "Alerts & Autopilot" },
       { href: "/journal", label: "Journal & Memory" },
       { href: "/sentiment", label: "Sentiment Lab" },
+      { href: "/track", label: "Track Record" },
     ],
   },
 ];

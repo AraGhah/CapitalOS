@@ -15,7 +15,9 @@ import { technicalSnapshot } from "../technicals";
 import { gatherSignals } from "../signals";
 import { technicalItems } from "./technical-items";
 import { earningsItems } from "./earnings-items";
+import { trackItems } from "./track-items";
 import { earningsRead } from "../earnings/data";
+import { measuredHistory } from "../track/data";
 import { errorFields, log } from "../log";
 
 /* ---------------------------------------------------------------------------
@@ -48,7 +50,8 @@ export interface EvidenceItem {
     | "technical"
     | "earnings"
     | "social"
-    | "prediction";
+    | "prediction"
+    | "track";
   label: string;
   value?: number;
   unit?: Unit;
@@ -469,6 +472,16 @@ export async function buildEvidence(
         });
       }
     }
+  }
+
+  /* ---- how this person's earlier decisions on the company turned out */
+
+  // Not a coverage input: a stock never decided on is not missing evidence. A
+  // failed read leaves the items out rather than failing the run.
+  try {
+    for (const item of trackItems(await measuredHistory(actor.userId, company.id), { kind: "computed", ref: "computed from the decision_outcomes table by lib/track" })) b.add(item);
+  } catch (err) {
+    log.warn({ ...errorFields(err), ticker: company.ticker }, "earlier decisions could not be read for the evidence pack");
   }
 
   /* ---- macro */

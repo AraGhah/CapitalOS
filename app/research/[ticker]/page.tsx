@@ -21,6 +21,7 @@ import { ChecklistPanel } from "@/app/components/ChecklistPanel";
 import { TechnicalPanel } from "@/app/components/TechnicalPanel";
 import { LensesPanel } from "@/app/components/PersonasPanel";
 import { EarningsDriftPanel } from "@/app/components/EarningsDriftPanel";
+import { StockTrackPanel } from "@/app/components/TrackPanels";
 
 export const dynamic = "force-dynamic";
 
@@ -227,6 +228,21 @@ export default async function ResearchPage({ params }: PageProps<"/research/[tic
             }
           >
             <EarningsDriftPanel company={company} />
+          </Suspense>
+
+          <Suspense
+            fallback={
+              <section className="panel" id="track">
+                <div className="panel-head">
+                  <h2>Your earlier calls</h2>
+                </div>
+                <p className="missing" style={{ padding: "0.9rem" }}>
+                  Reading the decisions recorded on {company.ticker}…
+                </p>
+              </section>
+            }
+          >
+            <StockTrackPanel userId={actor.userId} ticker={company.ticker} />
           </Suspense>
 
           <section className="panel">

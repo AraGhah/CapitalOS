@@ -6,6 +6,7 @@ import { runDeskPipeline } from "../pipeline";
 import { runCycle } from "../autopilot/cycle";
 import { checkOpenTheses } from "../theses";
 import { checkMemory } from "../ai/memory";
+import { settleDecisions } from "../track/data";
 import { runRetention } from "../retention";
 import { ensureBenchmark, refreshPrices, trackedForPrices } from "../market/ingest";
 import { refreshFx } from "../fx";
@@ -87,7 +88,14 @@ const recheck: HandlerSpec<Record<string, never>> = {
   run: async () => {
     const theses = await checkOpenTheses(null);
     const memory = await checkMemory(null);
-    return { theses: theses.checked, invalidated: theses.invalidated.length, memorySettled: memory.settled.length };
+    // Recorded decisions whose horizon has closed since the last run.
+    const decisions = await settleDecisions(null);
+    return {
+      theses: theses.checked,
+      invalidated: theses.invalidated.length,
+      memorySettled: memory.settled.length,
+      decisionsSettled: decisions.written,
+    };
   },
 };
 

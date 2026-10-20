@@ -16,6 +16,8 @@
     "mcp": "tsx mcp/server.ts",
     "benchmark-sentiment": "tsx scripts/benchmark-sentiment.ts",
     "retag-sentiment": "tsx scripts/retag-sentiment.ts",
+    "settle-decisions": "tsx scripts/settle-decisions.ts",
+    "check-plan": "tsx scripts/check-plan.ts",
     "check-memory": "tsx scripts/check-memory.ts",
     "selftest-consensus": "tsx scripts/selftest-consensus.ts",
     "selftest-risk": "tsx scripts/selftest-risk.ts",

@@ -472,6 +472,103 @@ and the no-key verdict is computed from the label counts, so it can change.
 `GET /api/sentiment/study` return them as JSON, and the MCP server's
 `sentiment_benchmark` tool returns both.
 
+## Track record: settling decisions and checking the plan (`/track`)
+
+TradingAgents keeps a log of its decisions and, once enough time has passed,
+resolves each with the realised return and the return less the market's. Here that
+is arithmetic on closes the desk already stores: no model is asked, nothing is
+fetched, and opening the page costs nothing.
+
+### Settling a decision (`lib/track/settle.ts`, `npm run settle-decisions`)
+
+A recorded decision keeps the date of the close it was drawn from. Five, twenty and
+sixty sessions later, the stock's return from that close is measured, less the S&P
+500's over the same two dates (SPY, stored with the prices). The result is one row
+per decision and horizon in `decision_outcomes`, written once; the database refuses
+an UPDATE, so a later price revision or a change to these rules cannot rewrite what
+was recorded the day the horizon closed.
+
+A rating is graded by its direction against the market, not by whether the stock
+went up. Buy and Overweight are right when the stock beat the market, Underweight
+and Sell when it trailed it. A move inside a band that widens with the square root
+of the horizon (0.5% × √sessions: 1.1%, 2.2%, 3.9%) is *flat*, neither right nor
+wrong, so a rating cannot score by being too close to call. A Hold makes no claim
+against the market and is measured but not graded. The band is a choice, not a
+finding; it is in `SETTLE_RULES`.
+
+A decision that cannot be fairly measured is recorded as `excluded` with the reason
+and is not retried: no price date, no stored close within four days of it, a hole
+in the prices (more than four calendar days per session), or a split inside the
+window (the plan's prices and the later closes are on different share counts). A
+horizon that has not closed yet, or a window the S&P 500's stored closes do not
+cover, is left to a later run.
+
+The nightly `maintenance.recheck` job settles whatever has closed (its result
+reports `decisionsSettled`), and `npm run settle-decisions` does the same by hand.
+Each decision gets one line in the journal, at 20 sessions ("measured"), so the
+outcome sits beside the day it was recorded.
+
+The same walk tests the plan the decision drew. A market entry fills at the plan's
+price; a pullback entry fills only if a session trades down to it (at the open if
+the stock gaps below). Daily bars do not say what order a session's high and low
+came in, so every ambiguity goes against the plan: a stop and a reward level
+touched in one session count as the stop, a level touched in the session a
+pullback filled is not credited, and a gap through the stop exits at the open.
+
+### What the page shows
+
+For each horizon, the share of Buy/Overweight calls that beat the market and of
+Underweight/Sell calls that trailed it, with a 95% (Wilson) interval, the mean return
+less the market's signed by the call, and a comparison with a coin toss, which is what
+a rating with no skill would score. The comparison is declined until a group has 10
+decided calls; with a handful of decisions the page says how many more it needs
+rather than printing a verdict. Then how the plans' stops and reward levels fared
+(entries, filled, stopped, reached 1.5R / 2R / 3R first, mean result in R), and the
+calls themselves.
+
+Each call carries what the stored record shows, in plain sentences: the rating and the
+close it was drawn from, what held it back, which dimensions it leaned on, what the
+desk held back from, what the stock then did against the market, and what happened to
+the stop and reward levels. These are assembled by code from the record. A model asked
+why it was wrong will produce a fluent reason whether or not it knows one, so none is
+asked; what to learn from a call is yours to write in the journal.
+
+The intervals assume the calls are independent. Calls made in the same weeks, in the
+same sectors and in one kind of market are not, so the intervals are narrower than
+they should be, and a record built in a rising market says little about a falling
+one. Expect it to be sparse for months: a decision needs 20 sessions to say anything.
+
+### Do the plan's stops and reward levels hold up? (`npm run check-plan`)
+
+A handful of settled decisions cannot yet say whether a stop two ATRs below the
+entry is too tight, but stored price history can. For each stock the desk has at least
+81 sessions of (up to 40, the S&P 500 left out), every 20 sessions it draws the plan
+the Trader would have drawn that day, from the bars up to it and with the same code,
+and walks it through the next 20 sessions. It reports how many filled, how many were
+stopped, how many reached each reward level before any stop, and the mean result with
+and without the stop. There is no committee and no rating behind these entries, only
+the plan's own rules on a fixed calendar, so nothing is picked for having worked.
+
+Starts are spaced a window apart so none overlaps the next on the same stock, but
+stocks move together, so the pooled plans are fewer independent observations than they
+look. Windows that span a split or a gap are left out, and below 30 plans the page calls
+the result an illustration. `RANGE=5y npm run fetch-prices` gives it more history. It
+describes the past on these stocks; it is not a forecast.
+
+### What the committee reads
+
+The evidence pack carries up to three of your earlier measured decisions on the same
+stock, newest first, at the longest horizon measured: the stock's return, the S&P
+500's and the difference, each a numbered item the fact checker can test a model's
+figure against, and a plain line saying how the call turned out. Figures only; no
+lesson is drawn for the committee. They add no coverage input, so a stock you have
+never decided on does not lower a first committee's confidence. They are not fed into
+which models sit on the committee.
+
+`/track` shows the record and the plan check, and every research page lists your earlier
+calls on that stock. `GET /api/track/record` (with `?ticker=`) and `GET /api/track/plan`
+return them as JSON, and the MCP server's `decision_track_record` tool returns both.
+
 ## Portfolio risk (`/risk`)
 
 `lib/risk` measures the open positions — or the watchlist, or a what-if basket
@@ -561,6 +658,9 @@ rather than by convention:
 - `decisions` — what the desk advised on a day, computed by code from a
   committee's scores and your own checklist, profile and portfolio, with the
   inputs it used. No model writes one.
+- `decision_outcomes` — what a stock did against the S&P 500 after a decision, 5, 20
+  and 60 sessions on, measured by arithmetic on stored closes. Written once and
+  never updated (the database refuses it); no model writes one.
 - `earnings_releases` — the days companies announced earnings (8-K Item 2.02),
   public data shared by everyone. The earnings surprise, the reaction and the
   investor lenses are computed from filings and prices at read time and stored

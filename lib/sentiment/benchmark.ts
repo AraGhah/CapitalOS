@@ -1,4 +1,5 @@
 import type { Sentiment } from "../sentiment";
+import { wilson } from "../stats";
 import { DEV, HELD_OUT, type Gold, type Kind } from "./gold";
 import { readHeadline } from "./lexicon";
 import { tagByWordList } from "./legacy";
@@ -14,6 +15,9 @@ import { tagByWordList } from "./legacy";
 --------------------------------------------------------------------------- */
 
 export const LABELS: readonly Sentiment[] = ["bullish", "neutral", "bearish"];
+
+// The interval lives in lib/stats.ts; it is re-exported because the benchmark is where it started.
+export { wilson };
 
 export interface ClassScore {
   precision: number | null;
@@ -47,17 +51,6 @@ export interface BenchmarkResult {
   confusion: Record<Sentiment, Record<Sentiment, number>>;
   byKind: Array<{ kind: Kind; n: number; accuracy: number }>;
   misses: Miss[];
-}
-
-// The Wilson score interval: well behaved at the small counts and the extreme
-// proportions that a hand-labelled set produces.
-export function wilson(successes: number, n: number, z = 1.96): [number, number] {
-  if (n === 0) return [0, 0];
-  const p = successes / n;
-  const denominator = 1 + (z * z) / n;
-  const centre = (p + (z * z) / (2 * n)) / denominator;
-  const half = (z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / denominator;
-  return [Math.max(0, centre - half), Math.min(1, centre + half)];
 }
 
 const zero = (): Record<Sentiment, Record<Sentiment, number>> => ({

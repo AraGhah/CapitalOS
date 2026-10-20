@@ -14,6 +14,7 @@ export interface ToolSource {
     | "consensus_run"
     | "headlines"
     | "benchmark_set"
+    | "decision_outcomes"
     | "sources";
   ref: string;
   id?: string;

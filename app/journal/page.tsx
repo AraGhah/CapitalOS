@@ -9,6 +9,7 @@ export const dynamic = "force-dynamic";
 const KIND_LABEL: Record<string, { label: string; tone: string }> = {
   committee: { label: "committee", tone: "info" },
   decision: { label: "decision", tone: "info" },
+  "decision-settled": { label: "measured", tone: "info" },
   "thesis-opened": { label: "thesis", tone: "good" },
   "thesis-invalidated": { label: "thesis broke", tone: "bad" },
   "memory-supported": { label: "held", tone: "good" },
@@ -58,7 +59,7 @@ export default async function JournalPage() {
               <ul className="timeline">
                 {entries.map((e) => {
                   const kind = KIND_LABEL[e.kind] ?? { label: e.kind, tone: "" };
-                  const href = e.kind === "committee" && e.refId ? `/committee/${e.refId}` : null;
+                  const href = e.kind === "committee" && e.refId ? `/committee/${e.refId}` : e.kind === "decision-settled" ? "/track" : null;
                   return (
                     <li key={e.id}>
                       <time dateTime={e.createdAt}>{e.createdAt.slice(0, 10)}</time>
