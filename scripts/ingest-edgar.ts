@@ -2,12 +2,14 @@ import "../lib/env";
 import { pool } from "../lib/db";
 import { cachedJson } from "../lib/sec";
 import {
+  earningsReleases,
   filingUrl,
   padCik,
   parseFacts,
   sectorForSic,
   type CompanyFacts,
   type ParsedFact,
+  type RecentFilings,
 } from "../lib/edgar";
 
 const REFRESH = process.argv.includes("--refresh");
@@ -36,15 +38,18 @@ interface Submissions {
   name: string;
   sic: string;
   sicDescription: string;
+  filings?: { recent?: RecentFilings };
 }
 
-async function updateCompanyProfile(companyId: string, cik: number) {
-  const subs = (await cachedJson(
+async function loadSubmissions(cik: number): Promise<Submissions> {
+  return (await cachedJson(
     `submissions-${padCik(cik)}`,
     `https://data.sec.gov/submissions/CIK${padCik(cik)}.json`,
     REFRESH
   )) as Submissions;
+}
 
+async function updateCompanyProfile(companyId: string, cik: number, subs: Submissions) {
   await pool.query(
     `UPDATE companies
      SET cik = $2, name = $3, sector = $4, industry = $5
@@ -156,6 +161,22 @@ async function insertFundamentals(companyId: string, facts: ParsedFact[], filing
   return fresh.length;
 }
 
+// The days of the company's earnings press releases (8-K Item 2.02), which date
+// each quarter's announcement. Idempotent: a release already stored is skipped.
+async function storeEarningsReleases(companyId: string, cik: number, subs: Submissions): Promise<number> {
+  const releases = earningsReleases(cik, subs.filings?.recent);
+  if (releases.length === 0) return 0;
+
+  const { rowCount } = await pool.query(
+    `INSERT INTO earnings_releases (accession, company_id, announced_on, url)
+     SELECT accession, $1, announced_on::date, url
+     FROM unnest($2::text[], $3::text[], $4::text[]) AS t(accession, announced_on, url)
+     ON CONFLICT (accession) DO NOTHING`,
+    [companyId, releases.map((r) => r.accession), releases.map((r) => r.announcedOn), releases.map((r) => r.url)]
+  );
+  return rowCount ?? 0;
+}
+
 async function main() {
   const { rows: companies } = await pool.query(
     "SELECT id, ticker FROM companies WHERE active = true ORDER BY ticker"
@@ -176,7 +197,8 @@ async function main() {
     }
 
     try {
-      await updateCompanyProfile(company.id, entry.cik_str);
+      const subs = await loadSubmissions(entry.cik_str);
+      await updateCompanyProfile(company.id, entry.cik_str, subs);
 
       const facts = (await cachedJson(
         `facts-${padCik(entry.cik_str)}`,
@@ -187,9 +209,11 @@ async function main() {
       const parsed = parseFacts(facts);
       const filingIds = await upsertFilings(company.id, entry.cik_str, parsed);
       const inserted = await insertFundamentals(company.id, parsed, filingIds);
+      // Last, so a database that has not run the newest migration still gets its fundamentals.
+      const releases = await storeEarningsReleases(company.id, entry.cik_str, subs);
 
       console.log(
-        `${company.ticker}: ${parsed.length} facts across ${filingIds.size} filings, ${inserted} new rows`
+        `${company.ticker}: ${parsed.length} facts across ${filingIds.size} filings, ${inserted} new rows, ${releases} new earnings releases`
       );
     } catch (err) {
       console.error(`${company.ticker}: ${(err as Error).message}`);

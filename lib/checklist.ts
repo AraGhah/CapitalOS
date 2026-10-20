@@ -241,6 +241,11 @@ function ebitda(p: PeriodIn): number | null {
   return op === null ? null : op + (v(p, "depreciation_amortization") ?? 0);
 }
 
+// The investor lenses (lib/personas) read the same periods with the same
+// conventions for debt, cash and free cash flow, so they borrow these rather
+// than keep a second copy that could drift.
+export { v as periodValue, d as periodDerived, div as ratioOf, grossProfit, fcf as freeCashFlow, debt as totalDebt, cashAndInvestments, ebitda };
+
 // The compound annual rate between the newest and oldest of a newest-first
 // series, over the years between their period ends.
 export function cagr(series: Array<{ periodEnd: string; value: number | null }>): number | null {

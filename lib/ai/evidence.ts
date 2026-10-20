@@ -14,6 +14,9 @@ import { getSplits, splitFactor } from "../splits";
 import { technicalSnapshot } from "../technicals";
 import { gatherSignals } from "../signals";
 import { technicalItems } from "./technical-items";
+import { earningsItems } from "./earnings-items";
+import { earningsRead } from "../earnings/data";
+import { errorFields, log } from "../log";
 
 /* ---------------------------------------------------------------------------
    The Capital Data Engine, as far as the committee is concerned: one evidence
@@ -43,6 +46,7 @@ export interface EvidenceItem {
     | "macro"
     | "position"
     | "technical"
+    | "earnings"
     | "social"
     | "prediction";
   label: string;
@@ -338,6 +342,20 @@ export async function buildEvidence(
   if (technical) {
     for (const item of technicalItems(technical, { kind: "computed", ref: `computed from ${price.ref} by lib/technicals` })) b.add(item);
   }
+
+  /* ---- the latest earnings surprise and the market's reaction to it */
+
+  // Read from the same filings and closes as the research page. A failure here
+  // is a missing input, not a failed run.
+  let earnings: Array<Omit<EvidenceItem, "id">> = [];
+  try {
+    const read = await earningsRead(company, price);
+    earnings = earningsItems(read.drift, { kind: "computed", ref: `computed from quarterly filings and ${read.ref ?? "stored closes"} by lib/earnings` });
+  } catch (err) {
+    log.warn({ ...errorFields(err), ticker: company.ticker }, "earnings surprise could not be read for the evidence pack");
+  }
+  inputs.push({ name: "earnings surprise", present: earnings.length > 0 });
+  for (const item of earnings) b.add(item);
 
   /* ---- the sector score */
 

@@ -16,6 +16,8 @@ import { getPortfolioSeries } from "../lib/timeseries";
 import { getScores } from "../lib/scoring";
 import { buildChecklist } from "../lib/checklist-data";
 import { decideForRun } from "../lib/decision/data";
+import { earningsRead } from "../lib/earnings/data";
+import { lensRead } from "../lib/personas/data";
 import { technicalRead, technicalSummary } from "../lib/technical-read";
 import { SECTION_NAMES, getFilingSection } from "../lib/filing-text";
 import { RESEARCH_FIELDS, addClaims, getResearchNote, type ResearchField } from "../lib/research";
@@ -333,6 +335,64 @@ server.registerTool(
       return reply(technicalSummary(read), [{ kind: "prices_daily", ref: read.ref }]);
     } catch (err) {
       return failed(`no price history for "${ticker}": ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+);
+
+server.registerTool(
+  "investor_lenses",
+  {
+    title: "Investor lenses",
+    description:
+      "Eight well-known investors' published tests run on a company's own annual figures: Graham (defensive value), Buffett, " +
+      "Munger, Lynch (growth at a reasonable price), Fisher, Burry (deep value), Wood (disruptive growth) and Damodaran (what the " +
+      "price assumes). Each lens is a table of checks with the bar printed beside the value measured, marked pass, partial, " +
+      "fail or missing (the desk lacks the data), and a fit of fits, mixed, does not fit or not enough data; what each investor " +
+      "judged that no figure answers is listed as not measured. Computed by code; no model is called and nothing is forecast. " +
+      "A lens is a way of looking, not advice, and does not replace the pre-investment checklist.",
+    inputSchema: { ticker: z.string() },
+  },
+  async ({ ticker }) => {
+    const company = await resolve(ticker);
+    if (typeof company === "string") return failed(company);
+    try {
+      const read = await lensRead(company);
+      return reply(read, [
+        companySource(company),
+        { kind: "filing", ref: "annual XBRL facts" },
+        { kind: "prices_daily", ref: read.source ?? "no prices available" },
+      ]);
+    } catch (err) {
+      return failed(`the lenses could not be run for "${ticker}": ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+);
+
+server.registerTool(
+  "earnings_drift",
+  {
+    title: "Earnings drift",
+    description:
+      "Post-earnings-announcement drift for a company: the latest quarter's earnings per share against the same quarter a year " +
+      "earlier, as standardised unexpected earnings (SUE, in units of how much that change usually varies; no analyst estimates), " +
+      "the stock's return around the announcement less the S&P 500's, and the drift since, with the sessions elapsed against the " +
+      "60-session window in which drift has been documented. Says whether the market confirmed the surprise. The announcement is " +
+      "dated by the 8-K under Item 2.02 when the desk has it, otherwise by the 10-Q. A historical tendency that has weakened over " +
+      "time, not a forecast. Computed by code; no model is called.",
+    inputSchema: { ticker: z.string() },
+  },
+  async ({ ticker }) => {
+    const company = await resolve(ticker);
+    if (typeof company === "string") return failed(company);
+    try {
+      const read = await earningsRead(company);
+      return reply(read, [
+        companySource(company),
+        { kind: "filing", ref: "quarterly XBRL facts and Item 2.02 8-Ks" },
+        { kind: "prices_daily", ref: read.ref ?? "no prices available" },
+      ]);
+    } catch (err) {
+      return failed(`the earnings drift could not be read for "${ticker}": ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 );

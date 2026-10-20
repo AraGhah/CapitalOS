@@ -71,6 +71,8 @@ describe("the evidence pack with technicals and outside signals", () => {
     resetConfig();
     const calls = stubNetwork();
     await seedPrices(await company("AAPL"));
+    // the earnings read compares the stock with the S&P 500, which the desk stores with its prices
+    await seedPrices(await company("SPY"));
 
     const pack = await buildEvidence((await findCompany("AAPL"))!, OWNER);
 
@@ -101,6 +103,8 @@ describe("the evidence pack with technicals and outside signals", () => {
     resetConfig();
     const calls = stubNetwork();
     await seedPrices(await company("AAPL"));
+    // the earnings read compares the stock with the S&P 500, which the desk stores with its prices
+    await seedPrices(await company("SPY"));
     const aapl = (await findCompany("AAPL"))!;
 
     const first = await buildEvidence(aapl, OWNER);

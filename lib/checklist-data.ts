@@ -4,11 +4,11 @@ import { findCompany } from "./company";
 import { getFilings } from "./company";
 import { getProfile } from "./profile";
 import { annualPeriods, getScores } from "./scoring";
-import { deriveMetrics } from "./metrics";
-import { loadBars } from "./market/bars";
+import { deriveMetrics, type PeriodFacts } from "./metrics";
+import { loadBars, type Loaded } from "./market/bars";
 import { priceStats } from "./ai/evidence";
 import { capitalisationShares } from "./edgar";
-import { getSplits, splitFactor } from "./splits";
+import { getSplits, splitFactor, type Split } from "./splits";
 import { macroSnapshot } from "./market/overview";
 import { getPortfolio } from "./holdings";
 import { getAccount } from "./cash";
@@ -82,43 +82,8 @@ export async function gatherChecklist(
 
   if (opts.positionSize !== undefined && opts.positionSize !== null) profile.positionSize = opts.positionSize;
 
-  // Each period's derived figures against the period before it, the same
-  // arithmetic the scores and theses use.
-  const recent = rawPeriods.slice(0, PERIODS);
-  const periods: PeriodIn[] = recent.map((current, i) => {
-    const derived = deriveMetrics({ current, prior: rawPeriods[i + 1] });
-    return {
-      periodEnd: current.periodEnd,
-      values: Object.fromEntries([...current.values].map(([k, x]) => [k, x.toNumber()])),
-      derived: Object.fromEntries([...derived].map(([k, x]) => [k, x.toNumber()])),
-    };
-  });
-
-  let price: ChecklistInput["price"] = null;
-  let marketCap: number | null = null;
-  if (bars && bars.bars.length > 1) {
-    const closes = bars.bars.map((b) => ({ date: b.date, close: b.close }));
-    const stats = priceStats(closes);
-    const last = bars.bars[bars.bars.length - 1];
-    const recentVolume = bars.bars.slice(-20).filter((b) => b.volume !== null);
-    price = {
-      last: last.close,
-      asOf: last.date,
-      volatility: stats.volatility,
-      maxDrawdown: stats.maxDrawdown,
-      avgDollarVolume:
-        recentVolume.length >= 10 ? recentVolume.reduce((s, b) => s + b.close * (b.volume as number), 0) / recentVolume.length : null,
-      source: bars.source,
-    };
-    // Shares as filed for the latest period, restated for any split since, so
-    // they are on the same basis as the split-adjusted price.
-    const latest = recent[0];
-    const shares = latest ? capitalisationShares(latest.values) : undefined;
-    if (latest && shares && shares.gt(0)) {
-      const factor = splitFactor(splits.get(company.id), latest.periodEnd);
-      marketCap = shares.mul(factor).mul(last.close).toNumber();
-    }
-  }
+  const periods = periodsOf(rawPeriods, PERIODS);
+  const { price, marketCap } = priceAndCap(bars, rawPeriods[0], splits.get(company.id));
 
   const score = scores.find((s) => s.companyId === company.id);
   const percentiles: Record<string, number> = {};
@@ -175,6 +140,52 @@ export async function gatherChecklist(
     heldQty: held?.qty.toNumber() ?? 0,
     holdings: portfolio.holdings.map((h) => ({ ticker: h.ticker, value: h.marketValue.toNumber() })),
   };
+}
+
+// Each period's derived figures against the period before it, the same
+// arithmetic the scores and theses use. Newest first.
+export function periodsOf(rawPeriods: PeriodFacts[], count: number): PeriodIn[] {
+  return rawPeriods.slice(0, count).map((current, i) => {
+    const derived = deriveMetrics({ current, prior: rawPeriods[i + 1] });
+    return {
+      periodEnd: current.periodEnd,
+      values: Object.fromEntries([...current.values].map(([k, x]) => [k, x.toNumber()])),
+      derived: Object.fromEntries([...derived].map(([k, x]) => [k, x.toNumber()])),
+    };
+  });
+}
+
+// The last price and what it implies for the market capitalisation, from the
+// bars and the latest annual period.
+export function priceAndCap(
+  bars: Loaded | null,
+  latest: PeriodFacts | undefined,
+  splits: Split[] | undefined
+): { price: ChecklistInput["price"]; marketCap: number | null } {
+  if (!bars || bars.bars.length <= 1) return { price: null, marketCap: null };
+
+  const closes = bars.bars.map((b) => ({ date: b.date, close: b.close }));
+  const stats = priceStats(closes);
+  const last = bars.bars[bars.bars.length - 1];
+  const recentVolume = bars.bars.slice(-20).filter((b) => b.volume !== null);
+  const price: ChecklistInput["price"] = {
+    last: last.close,
+    asOf: last.date,
+    volatility: stats.volatility,
+    maxDrawdown: stats.maxDrawdown,
+    avgDollarVolume:
+      recentVolume.length >= 10 ? recentVolume.reduce((s, b) => s + b.close * (b.volume as number), 0) / recentVolume.length : null,
+    source: bars.source,
+  };
+
+  // Shares as filed for the latest period, restated for any split since, so
+  // they are on the same basis as the split-adjusted price.
+  const shares = latest ? capitalisationShares(latest.values) : undefined;
+  let marketCap: number | null = null;
+  if (latest && shares && shares.gt(0)) {
+    marketCap = shares.mul(splitFactor(splits, latest.periodEnd)).mul(last.close).toNumber();
+  }
+  return { price, marketCap };
 }
 
 async function sectorValue(holdings: Array<{ companyId: string; value: number }>, sector: string): Promise<number> {

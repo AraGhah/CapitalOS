@@ -19,6 +19,8 @@ import { modeSpec } from "@/lib/ai/modes";
 import { Suspense } from "react";
 import { ChecklistPanel } from "@/app/components/ChecklistPanel";
 import { TechnicalPanel } from "@/app/components/TechnicalPanel";
+import { LensesPanel } from "@/app/components/PersonasPanel";
+import { EarningsDriftPanel } from "@/app/components/EarningsDriftPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -134,6 +136,21 @@ export default async function ResearchPage({ params }: PageProps<"/research/[tic
             <ChecklistPanel actor={actor} ticker={company.ticker} />
           </Suspense>
 
+          <Suspense
+            fallback={
+              <section className="panel" id="lenses">
+                <div className="panel-head">
+                  <h2>Investor lenses</h2>
+                </div>
+                <p className="missing" style={{ padding: "0.9rem" }}>
+                  Running the investors&apos; tests…
+                </p>
+              </section>
+            }
+          >
+            <LensesPanel company={company} />
+          </Suspense>
+
           <section className="panel">
             <div className="panel-head">
               <h2>The wire</h2>
@@ -195,6 +212,21 @@ export default async function ResearchPage({ params }: PageProps<"/research/[tic
             }
           >
             <TechnicalPanel ticker={company.ticker} />
+          </Suspense>
+
+          <Suspense
+            fallback={
+              <section className="panel" id="earnings">
+                <div className="panel-head">
+                  <h2>Earnings drift</h2>
+                </div>
+                <p className="missing" style={{ padding: "0.9rem" }}>
+                  Reading the latest earnings and the reaction to them…
+                </p>
+              </section>
+            }
+          >
+            <EarningsDriftPanel company={company} />
           </Suspense>
 
           <section className="panel">

@@ -280,6 +280,91 @@ using it must call it before suggesting any stock. Interest coverage and dividen
 `interest_expense` and `dividends_paid`; run `npm run ingest-edgar` once to pick
 them up.
 
+## Investor lenses and earnings drift (every research page)
+
+Two more panels on the research page, and the second also reaches the committee.
+Neither calls a model, so neither costs anything to compute.
+
+### Investor lenses (`lib/personas/`)
+
+virattt/ai-hedge-fund has a model play each famous investor. Here each investor
+is a table of checks, written from their published books and letters and run by
+code on the company's own annual figures; nothing is copied from that repository.
+Eight lenses, 41 checks: **Graham** (defensive value: steady profit, a dividend,
+growth, modest debt, a moderate price), **Buffett** (return on equity, margins,
+debt a few years of profit could repay, owner earnings, dilution, owner earnings
+against the Treasury yield), **Munger** (return on invested capital, steady gross
+margin, a predictable record, cash conversion, net debt, dilution, price against
+free cash flow), **Lynch** (growth he can live with, PEG, debt, free cash flow, growth from
+sales), **Fisher** (sales growth, margins and their direction, returns on capital,
+growth paid for from within), **Burry** (free cash flow yield, EV to operating
+profit, balance sheet, distance below the high, real earnings), **Wood** (revenue
+growth and acceleration, gross margin, operating leverage) and **Damodaran** (the
+growth the price assumes, from the checklist's reverse discounted cash flow, set
+beside the growth delivered; return above the cost of capital; cash flow to value).
+
+Each check shows its bar, the figure measured and pass, partly (half credit), fail
+or **no data**. A lens **fits** when the company clears 70% or more of the weight
+it could measure, **does not fit** at 30% or less, is **mixed** between, and says
+**not enough data** when under 60% of its weight could be measured (a check that
+needs a record, such as consistency or growth, has no data below three annual
+periods). A bank is not tested on debt, margins or returns on capital. Every bar is a constant at the top of `lib/personas/lenses.ts`, and
+each lens lists what the investor weighed that no figure answers (the moat, the
+management, the story) as **not measured**. The figures come from the same
+functions as the pre-investment checklist, so the two never disagree about a
+number. A lens is a way of looking, not a recommendation, and the checklist stays
+the gate. Ackman, Pabrai, Jhunjhunwala, Druckenmiller and Taleb are not here: their
+tests would either repeat these or need data the desk does not hold.
+
+The lenses do not feed the committee or the decision. Eight investors who all
+read the same ratios are not eight independent opinions, and putting them in the
+evidence would have the models echo them.
+
+### Earnings drift (`lib/earnings/`)
+
+Stocks have tended to keep moving in the direction of an earnings surprise for
+weeks afterwards (post-earnings-announcement drift, Ball and Brown 1968, Bernard
+and Thomas 1989). The effect is documented, and has weakened as it became known.
+The panel measures whether the latest quarter set it up; it forecasts nothing.
+
+- **Surprise.** Without analyst estimates, as a seasonal random walk with drift:
+  diluted EPS against the same quarter a year earlier, less the mean of up to
+  eight earlier such changes, divided by their sample deviation (SUE). It needs at
+  least four earlier changes; a beat or miss is 1 deviation or more. A quarter and
+  its year-ago comparative are both read from the one filing, so a split between
+  them cannot pass for a surprise.
+- **Announcement.** The day of the 8-K filed under Item 2.02 (kept in
+  `earnings_releases`), because the market reacts to the press release and the
+  10-Q can follow it by weeks. Where no release is stored the 10-Q's filing date
+  is used and the panel says so.
+- **Reaction.** The stock's return less the S&P 500's from the close before the
+  announcement day to the close after it, so an after-hours release is caught.
+  The market agrees when it moved at least 0.5% in the surprise's direction.
+- **Drift since.** The abnormal return after the reaction closed, against the 60
+  sessions in which drift has been documented.
+
+Prices are read as the technical read reads them (the desk's own bars while fresh,
+complete sessions only). The same figures reach the committee as about a dozen
+short items in its evidence pack (`lib/ai/earnings-items.ts`, kind `earnings`, a
+new coverage input, "earnings surprise"), so the fact checker can test a number a
+model writes; the reading is stated in words with no figure and no forecast. They
+also come at `GET /api/earnings/<ticker>`, the lenses at `GET
+/api/personas/<ticker>`, and through the MCP server's `earnings_drift` and
+`investor_lenses` tools.
+
+```bash
+npm run migrate        # applies 0019_earnings_releases.sql
+npm run ingest-edgar   # now also reads diluted EPS and the Item 2.02 8-Ks
+```
+
+Limits: the fiscal fourth quarter is not readable (a 10-K carries only the year),
+so after an annual report the panel shows the last quarter it can read and says a
+newer report exists; a company with fewer than five quarters of EPS is not scored;
+the 8-K list is the recent-filings list EDGAR already returns, so an old
+announcement may be dated by its 10-Q; and R&D spending and current assets are not
+stored, which is why Fisher's R&D point and Graham's current ratio are listed as
+not measured.
+
 ## Portfolio risk (`/risk`)
 
 `lib/risk` measures the open positions — or the watchlist, or a what-if basket
@@ -367,6 +452,10 @@ rather than by convention:
 - `decisions` — what the desk advised on a day, computed by code from a
   committee's scores and your own checklist, profile and portfolio, with the
   inputs it used. No model writes one.
+- `earnings_releases` — the days companies announced earnings (8-K Item 2.02),
+  public data shared by everyone. The earnings surprise, the reaction and the
+  investor lenses are computed from filings and prices at read time and stored
+  nowhere.
 - `paper_trades`, `alerts`, `autopilot_runs` — simulated trades, kept apart from
   `transactions`, and what the autopilot found. Alerts are written by code
   crossing a threshold; no model writes one.

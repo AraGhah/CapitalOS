@@ -50,9 +50,19 @@ const METRIC_TAGS: Record<string, string[]> = {
   // Shares in issue at the balance-sheet date. This, not the year's weighted
   // average, is what a market capitalisation multiplies the price by.
   shares_outstanding: ["CommonStockSharesOutstanding"],
+  // Dollars per share, so it has a unit of its own. The quarterly earnings
+  // surprise reads this; without it the surprise falls back to net income over
+  // diluted shares.
+  eps_diluted: ["EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted"],
 };
 
 const SHARE_METRICS = new Set(["shares_diluted", "shares_outstanding"]);
+const PER_SHARE_METRICS = new Set(["eps_diluted"]);
+
+function unitOf(metric: string): string {
+  if (SHARE_METRICS.has(metric)) return "shares";
+  return PER_SHARE_METRICS.has(metric) ? "USD/shares" : "USD";
+}
 
 // The share count a market capitalisation should use: shares outstanding at
 // the period end, or the diluted weighted average when a filer does not report
@@ -127,7 +137,7 @@ export function parseFacts(facts: CompanyFacts): ParsedFact[] {
   const parsed: ParsedFact[] = [];
 
   for (const [metric, tags] of Object.entries(METRIC_TAGS)) {
-    const unit = SHARE_METRICS.has(metric) ? "shares" : "USD";
+    const unit = unitOf(metric);
     const claimed = new Set<string>();
 
     for (const tag of tags) {
@@ -169,6 +179,37 @@ export function parseFacts(facts: CompanyFacts): ParsedFact[] {
 export function filingUrl(cik: number, accession: string): string {
   const stripped = accession.replace(/-/g, "");
   return `https://www.sec.gov/Archives/edgar/data/${cik}/${stripped}/${accession}-index.htm`;
+}
+
+// The parallel arrays of a company's recent filings in the SEC's submissions
+// file. `items` holds the 8-K item numbers a filing carries, e.g. "2.02,9.01".
+export interface RecentFilings {
+  accessionNumber?: string[];
+  filingDate?: string[];
+  form?: string[];
+  items?: string[];
+}
+
+export interface EarningsRelease {
+  accession: string;
+  announcedOn: string;
+  url: string;
+}
+
+// An 8-K under Item 2.02 ("Results of Operations") is how a company announces
+// its earnings, filed within days of the press release. The 10-Q can follow the
+// release by weeks, so the announcement is dated from this, not from the 10-Q.
+export function earningsReleases(cik: number, recent: RecentFilings | undefined): EarningsRelease[] {
+  const accessions = recent?.accessionNumber ?? [];
+  const out: EarningsRelease[] = [];
+  for (let i = 0; i < accessions.length; i++) {
+    if (recent?.form?.[i] !== "8-K") continue;
+    const items = (recent.items?.[i] ?? "").split(",").map((s) => s.trim());
+    const announcedOn = recent.filingDate?.[i];
+    if (!items.includes("2.02") || !announcedOn || !/^\d{4}-\d{2}-\d{2}$/.test(announcedOn)) continue;
+    out.push({ accession: accessions[i], announcedOn, url: filingUrl(cik, accessions[i]) });
+  }
+  return out;
 }
 
 export function padCik(cik: number | string): string {
