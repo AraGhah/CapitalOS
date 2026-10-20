@@ -17,6 +17,8 @@ import { getScores } from "../lib/scoring";
 import { buildChecklist } from "../lib/checklist-data";
 import { decideForRun } from "../lib/decision/data";
 import { earningsRead } from "../lib/earnings/data";
+import { benchmarkSummary } from "../lib/sentiment/benchmark";
+import { sentimentStudy } from "../lib/sentiment/data";
 import { lensRead } from "../lib/personas/data";
 import { technicalRead, technicalSummary } from "../lib/technical-read";
 import { SECTION_NAMES, getFilingSection } from "../lib/filing-text";
@@ -393,6 +395,32 @@ server.registerTool(
       ]);
     } catch (err) {
       return failed(`the earnings drift could not be read for "${ticker}": ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+);
+
+server.registerTool(
+  "sentiment_benchmark",
+  {
+    title: "Sentiment benchmark",
+    description:
+      "How reliable the desk's headline labels are. The benchmark: accuracy, F1, per-class figures, the confusion matrix and the misses " +
+      "of the rule-based tagger against hand-labelled headlines kept in the repository (a development set it was fitted to and a held-out " +
+      "set it was not), beside the old forty-word list it replaced. The study: whether the days the desk's news read bullish or bearish " +
+      "were followed by the stock beating or trailing the S&P 500, over stored prices, with the number of days behind each figure and " +
+      "'not enough data' where there are too few. The labelled sets were written by the same people who wrote the tagger, so the " +
+      "accuracy is optimistic, and a label that lined up with past returns is not a forecast. Computed by code; no model is called.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      return reply({ benchmark: benchmarkSummary(), study: await sentimentStudy() }, [
+        { kind: "benchmark_set", ref: "lib/sentiment/gold.ts: hand-labelled headlines kept in the repository" },
+        { kind: "headlines", ref: "every labelled headline from the last 540 days, with the provider that labelled it" },
+        { kind: "prices_daily", ref: "stored closes of the companies they name, and the S&P 500" },
+      ]);
+    } catch (err) {
+      return failed(`the sentiment benchmark could not be read: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 );

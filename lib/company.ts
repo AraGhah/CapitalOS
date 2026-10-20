@@ -12,6 +12,8 @@ export interface ToolSource {
     | "watchlist"
     | "macro_series"
     | "consensus_run"
+    | "headlines"
+    | "benchmark_set"
     | "sources";
   ref: string;
   id?: string;

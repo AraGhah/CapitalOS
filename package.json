@@ -14,6 +14,8 @@
     "ingest-fred": "tsx scripts/ingest-fred.ts",
     "check-theses": "tsx scripts/check-theses.ts",
     "mcp": "tsx mcp/server.ts",
+    "benchmark-sentiment": "tsx scripts/benchmark-sentiment.ts",
+    "retag-sentiment": "tsx scripts/retag-sentiment.ts",
     "check-memory": "tsx scripts/check-memory.ts",
     "selftest-consensus": "tsx scripts/selftest-consensus.ts",
     "selftest-risk": "tsx scripts/selftest-risk.ts",

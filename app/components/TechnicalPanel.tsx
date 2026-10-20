@@ -49,7 +49,7 @@ export async function TechnicalPanel({ ticker }: { ticker: string }) {
           <h2>Technicals</h2>
         </div>
         <p className="missing" style={{ padding: "0.9rem" }}>
-          Not enough price history to compute indicators — run <code>npm run fetch-prices-yahoo</code>.
+          Not enough price history to compute indicators — run <code>npm run fetch-prices</code>.
         </p>
       </section>
     );

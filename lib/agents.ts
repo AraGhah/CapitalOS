@@ -8,7 +8,7 @@ import {
   type HeadlineRow,
   type Verdict,
 } from "./dossier";
-import { summarize, tagByLexicon, type Sentiment, type SentimentSummary } from "./sentiment";
+import { LEXICON_PROVIDER, summarize, tagByLexicon, type Sentiment, type SentimentSummary } from "./sentiment";
 import { completeJson, hasModel, inputHash, modelName, NoModelError } from "./llm";
 import { latestMetrics } from "./scoring";
 import type { CompanyRow } from "./company";
@@ -89,7 +89,7 @@ const TAG_BATCH = 40;
 export async function analyst(company: CompanyRow, userId: string): Promise<AnalystResult> {
   const untagged = await getUntagged(company.id, WINDOW);
   const useModel = hasModel();
-  const provider = useModel ? modelName() : "lexicon";
+  const provider = useModel ? modelName() : LEXICON_PROVIDER;
 
   let tagged = 0;
 
@@ -111,14 +111,23 @@ export async function analyst(company: CompanyRow, userId: string): Promise<Anal
   return { sentiment, tagged, provider, headlines };
 }
 
-async function tagWithModel(batch: HeadlineRow[], userId: string): Promise<Sentiment[]> {
-  const listed = batch.map((h, i) => `${i}. ${h.title}`).join("\n");
+const tagWithModel = (batch: HeadlineRow[], userId: string) => tagTitlesWithModel(batch.map((h) => h.title), userId);
+
+// One request for up to TAG_BATCH titles, with the analyst's own prompt: what the
+// desk would spend labelling them, which is what the sentiment benchmark
+// measures when it is asked to compare a model with the rule-based tagger.
+export async function tagTitlesWithModel(
+  titles: string[],
+  userId: string,
+  meter: { purpose: string; stage: string } = { purpose: "analyst", stage: "tagging" }
+): Promise<Sentiment[]> {
+  const listed = titles.map((title, i) => `${i}. ${title}`).join("\n");
 
   const reply = await completeJson<unknown>({
     system: ANALYST_SYSTEM,
     messages: [{ role: "user", content: listed }],
     maxTokens: 2048,
-    meter: { userId, purpose: "analyst", stage: "tagging" },
+    meter: { userId, ...meter },
   });
   // The array is sometimes wrapped in an object ({"labels": [...]}); anything
   // else leaves every headline neutral rather than failing the whole run.
@@ -128,10 +137,10 @@ async function tagWithModel(batch: HeadlineRow[], userId: string): Promise<Senti
 
   // A model that skips or invents an index should not shift every other label,
   // so results are placed by index and anything missing stays neutral.
-  const tags: Sentiment[] = batch.map(() => "neutral");
+  const tags: Sentiment[] = titles.map(() => "neutral");
   for (const raw of parsed) {
     const item = (raw ?? {}) as { i?: unknown; s?: unknown };
-    if (typeof item.i !== "number" || !Number.isInteger(item.i) || item.i < 0 || item.i >= batch.length) continue;
+    if (typeof item.i !== "number" || !Number.isInteger(item.i) || item.i < 0 || item.i >= titles.length) continue;
     if (item.s === "bullish" || item.s === "bearish" || item.s === "neutral") {
       tags[item.i] = item.s;
     }

@@ -27,7 +27,7 @@ npm run dev                           # serves http://127.0.0.1:3000 only
 | `ANTHROPIC_MODEL` | overriding the model | `claude-opus-5-5` |
 | `DAILY_DOSSIER_BUDGET` | capping spend | 40 pipeline runs per day, then runs stop |
 | `OPENAI_API_KEY` | hosted embeddings for event clustering | local hashed-token vectors |
-| `ALPHA_VANTAGE_API_KEY` | `fetch-prices` | use `fetch-prices-yahoo` instead, which needs no key |
+| `MARKET_DATA_PROVIDER` | `fetch-prices`, the worker and the research pages: `alpaca`, `yahoo` or `auto` | `auto`: Alpaca when its keys are set, otherwise Yahoo, which needs no key (in production `auto` without Alpaca keys refuses to run) |
 | `OPENAI_API_KEY` + `OPENAI_MODEL` | an OpenAI seat on the committee | the key alone is only used for embeddings |
 | `GEMINI_API_KEY` + `GEMINI_MODEL` | a Gemini seat | — |
 | `XAI_API_KEY` + `XAI_MODEL`, `DEEPSEEK_API_KEY` + `DEEPSEEK_MODEL`, `OPENROUTER_API_KEY` + `OPENROUTER_MODEL` | more seats | — |
@@ -69,7 +69,7 @@ sizes of one model, so each extra provider key makes the consensus worth more.
 ## Filling it with data
 
 ```bash
-npm run fetch-prices-yahoo    # daily bars, no key needed (adds the SPY benchmark)
+npm run fetch-prices          # daily bars, no key needed (adds the SPY benchmark)
 npm run ingest-edgar          # filings and XBRL facts
 npm run compute-scores        # percentile scores from weights.json
 npm run ingest-news           # GDELT event clusters
@@ -365,6 +365,113 @@ announcement may be dated by its 10-Q; and R&D spending and current assets are n
 stored, which is why Fisher's R&D point and Graham's current ratio are listed as
 not measured.
 
+## Sentiment: labelling and benchmark (`/sentiment`)
+
+FinGPT scores its sentiment models on labelled financial headlines (accuracy and
+F1) and pairs a headline's label with the price move that followed it. The desk now
+does both with its own labeller, in `lib/sentiment/`. Nothing here calls a model,
+so nothing here costs anything except the opt-in comparison described below.
+
+### The labeller (`lexicon.ts`)
+
+The analyst labels each headline bullish, neutral or bearish. With a model key it
+asks the model, as before. Without one, which is how the desk runs since the chatbot
+and the Anthropic key were removed, it uses this rule-based tagger and stores the
+provider as `lexicon:2`. A headline's score is the sum of the weights of the words
+in it, so every label can be explained (`readHeadline(title)` returns the words and
+their weights, and the benchmark's miss list prints them). What it handles beyond a
+word list:
+
+- negation (`does not beat`, `fails to beat`) and the clause after `but`, which
+  counts for more than the one before it; `despite` and `even as` discount what
+  follows;
+- hypotheticals (`could surge if`) and questions, which are damped rather than read
+  as news;
+- percentage moves (`up 12%` is stronger than `down 3%`) and `edges up`;
+- what a verb did to a figure: `raises dividend` and `cuts jobs` say more than
+  `raises` and `cuts`; `above` and `below` read against estimates; a rising cost is
+  bad and a rising profit is good;
+- words that mislead: `fall` the season, `weight loss`, `fine` after an amount.
+
+The vocabulary is held against the benchmark below: a change that takes the
+development set under 97% or the held-out set under 90% fails
+`tests/unit/sentiment-lexicon.test.ts`.
+
+### The benchmark (`gold.ts`, `benchmark.ts`, `npm run benchmark-sentiment`)
+
+360 original headlines labelled by hand, balanced in thirds: 240 the rules were
+fitted to and 120 they were not. The public datasets FinGPT trains on carry
+licences that restrict commercial use, so none is copied. Accuracy comes with a 95%
+Wilson interval, and F1 (macro, and weighted as FinGPT reports it), per-class
+precision and recall, the confusion matrix, accuracy by kind of headline and every
+miss with the words the tagger saw.
+
+| Headlines | Rules | Old forty-word list |
+|---|---|---|
+| Development (240) | 99.2% | 67.9% |
+| Held out (120) | **93.3%** (87.4–96.6%), macro F1 93.4% | 75.0% |
+| The first fresh set (120), scored before any vocabulary was added for it; it is part of the development set now | 83.3% (75.7–88.9%) | 62.5% |
+
+Read the 93% as an upper bound. The same hands wrote the rules and the headlines,
+and the held-out set was written after the first fresh set had already led to new
+vocabulary, so the cautious figure is the 83%. The eight held-out misses are
+vocabulary or world knowledge (`rocket`, `nod`, `green light`, `efficacy`, `clears`,
+`bags … deal`, `hit by outflows`, and a `$1.4 billion privacy settlement`), and they
+are left alone so the held-out figure stays honest. Three other gaps found by
+probing afterwards (`closes plant` in the singular, `ends … troubles`, `struck a
+deal`) are fixed; none of the 360 labelled headlines changed label, so the figures
+above are unaffected. The number worth trusting is one on headlines you label
+yourself:
+
+```bash
+npm run benchmark-sentiment                          # both sets, rules against the old list
+npm run benchmark-sentiment -- --misses              # every headline the rules got wrong
+npm run benchmark-sentiment -- --gold=mine.json      # [{ "title": "...", "label": "bullish" }, …]
+npm run benchmark-sentiment -- --model --user=you@example.com [--all]
+```
+
+`--model` is the only part that costs anything. It sends the held-out set (120
+headlines) to the analyst's own labelling prompt, 40 to a request, so 3 requests, or
+9 with `--all` (the development set as well). Each is metered against that user's
+daily spend like any other model call, and it refuses to run without a key.
+
+### Did the labels line up with the stock? (the study)
+
+For each company and day, the news counts as bullish if it has more bullish
+headlines than bearish, bearish if more, neutral otherwise, so a story printed a
+dozen times is one observation. The study reports each group's mean return less the
+S&P 500's over the next session and the next five, from the close of the day the
+news appeared, and says whether bullish days beat bearish days by two standard
+errors. The same-day return is shown for reading and is never the test, because the
+label may only be agreeing with a move that had already happened.
+
+It reads stored closes only (no provider call, so run `npm run fetch-prices` to
+fill them, which also stores SPY), looks back 540 days, drops any window that
+spans a split or a gap in the data, and keeps the rules', the old list's and a
+model's labels apart. A group needs 30 company-days before it is compared; below that
+the page says how many more it needs rather than printing a number. The intervals
+assume independent days, which overlapping windows and news that moves a whole
+sector make untrue, so they are narrower than they should be. It measures the past;
+it is not a forecast, and the committee does not read it.
+
+### Relabelling what is already stored
+
+```bash
+npm run retag-sentiment            # what would change; writes nothing
+npm run retag-sentiment -- --apply
+```
+
+Headlines the old word list labelled (provider `lexicon`) are relabelled with the
+current rules and moved to `lexicon:2`; a model's labels are never touched. It
+prints the before-and-after matrix. Applying has two side effects worth knowing: a
+dossier is cached on its headlines' labels, so the next pipeline run for a company
+whose labels moved is a cache miss (one model run if a key is set, free otherwise),
+and the no-key verdict is computed from the label counts, so it can change.
+
+`/sentiment` shows the benchmark and the study; `GET /api/sentiment/benchmark` and
+`GET /api/sentiment/study` return them as JSON, and the MCP server's
+`sentiment_benchmark` tool returns both.
+
 ## Portfolio risk (`/risk`)
 
 `lib/risk` measures the open positions — or the watchlist, or a what-if basket
@@ -441,7 +548,9 @@ rather than by convention:
 - `research_notes` — every row needs a `source_id` and a verbatim `snippet`, both
   `NOT NULL`, so the database itself rejects an ungrounded claim.
 - `headlines`, `dossiers` (and the old `chat_messages`, no longer written) —
-  everything a model writes lives here and nowhere else. Each headline keeps its `sources` row, and every dossier
+  everything a model writes lives here and nowhere else, as does the rule-based
+  tagger's label (`sentiment_provider` says which wrote it: `lexicon:2` is the
+  rules, `lexicon` the old word list, anything else a model). Each headline keeps its `sources` row, and every dossier
   records the exact headlines it read in `dossier_headlines`, so a verdict can be
   traced back to its evidence.
 
