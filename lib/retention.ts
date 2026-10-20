@@ -14,8 +14,8 @@ import { config } from "./config";
    - finished jobs and their event logs after 30 days
    - schedule slots after a week
 
-   Ledger rows, audit rows, committee reports and fundamentals are never
-   trimmed: they are the record.
+   Ledger rows, audit rows, committee reports, recorded decisions and
+   fundamentals are never trimmed: they are the record.
 --------------------------------------------------------------------------- */
 
 export async function runRetention(): Promise<Record<string, number>> {

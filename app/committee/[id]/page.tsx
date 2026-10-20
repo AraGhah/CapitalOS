@@ -2,7 +2,9 @@ import { requirePageActor } from "@/lib/auth/current";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getRun } from "@/lib/ai/store";
+import { Suspense } from "react";
 import { ConsensusReportView } from "@/app/components/ConsensusReport";
+import { DecisionPanel } from "@/app/components/DecisionPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +43,12 @@ export default async function CommitteeRunPage({ params }: PageProps<"/committee
         </p>
       )}
       {summary.status === "failed" && <p className="alert">This run failed: {summary.error}</p>}
+
+      {report && (
+        <Suspense fallback={<p className="subtle">Working out the decision…</p>}>
+          <DecisionPanel actor={actor} runId={summary.id} ticker={summary.ticker} />
+        </Suspense>
+      )}
 
       {report && (
         <ConsensusReportView

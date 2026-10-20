@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 
 const KIND_LABEL: Record<string, { label: string; tone: string }> = {
   committee: { label: "committee", tone: "info" },
+  decision: { label: "decision", tone: "info" },
   "thesis-opened": { label: "thesis", tone: "good" },
   "thesis-invalidated": { label: "thesis broke", tone: "bad" },
   "memory-supported": { label: "held", tone: "good" },

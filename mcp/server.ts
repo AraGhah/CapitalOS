@@ -15,6 +15,7 @@ import { getPortfolio } from "../lib/holdings";
 import { getPortfolioSeries } from "../lib/timeseries";
 import { getScores } from "../lib/scoring";
 import { buildChecklist } from "../lib/checklist-data";
+import { decideForRun } from "../lib/decision/data";
 import { technicalRead, technicalSummary } from "../lib/technical-read";
 import { SECTION_NAMES, getFilingSection } from "../lib/filing-text";
 import { RESEARCH_FIELDS, addClaims, getResearchNote, type ResearchField } from "../lib/research";
@@ -176,6 +177,31 @@ server.registerTool(
     if (typeof company === "string") return failed(company);
     const checklist = await buildChecklist(actor, company.ticker, { positionSize });
     return reply(checklist, [companySource(company), { kind: "filing", ref: "annual XBRL facts" }, { kind: "prices_daily", ref: "one year of daily closes" }]);
+  }
+);
+
+server.registerTool(
+  "investment_decision",
+  {
+    title: "Investment decision",
+    description:
+      "What to do about a stock after a finished committee, for the person this server acts for: a five-tier rating " +
+      "(buy, overweight, hold, underweight, sell), an action (buy, add, hold, trim, sell, watch, avoid), a plan with " +
+      "an entry, a stop and reward levels, and a size in shares. Computed by code from the committee's scores, the " +
+      "person's pre-investment checklist, profile and portfolio; no model is called and nothing is written. The reward " +
+      "levels are planning arithmetic, not price predictions. Needs the id of a finished committee run.",
+    inputSchema: { runId: z.string().uuid() },
+  },
+  async ({ runId }) => {
+    try {
+      const { decision, hash } = await decideForRun(actor, runId);
+      return reply({ decision, inputsHash: hash }, [
+        { kind: "consensus_run", ref: runId },
+        { kind: "prices_daily", ref: "one year of daily closes" },
+      ]);
+    } catch (err) {
+      return failed(err instanceof Error ? err.message : "the decision could not be worked out");
+    }
   }
 );
 

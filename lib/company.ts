@@ -11,6 +11,7 @@ export interface ToolSource {
     | "companies"
     | "watchlist"
     | "macro_series"
+    | "consensus_run"
     | "sources";
   ref: string;
   id?: string;

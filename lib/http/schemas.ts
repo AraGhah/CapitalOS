@@ -46,12 +46,6 @@ export const AlertStatus = z.object({
 
 export const AutopilotRun = z.object({ convene: z.boolean().optional() });
 
-export const ChatQuestion = z.object({
-  question: z.string().trim().min(1, "ask something").max(4000, "keep the question under 4000 characters"),
-  // replace the latest answer with a new one to the same question
-  regenerate: z.boolean().optional(),
-});
-
 export const ConsensusStart = z.object({
   ticker: Ticker,
   mode: z.enum(["auto", "fast", "standard", "deep", "committee"]).default("standard"),

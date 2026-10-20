@@ -34,11 +34,28 @@ export class UnknownCompanyError extends Error {
   }
 }
 
+export interface GatheredChecklist {
+  input: ChecklistInput;
+  companyId: string;
+  // shares of this company held now
+  heldQty: number;
+}
+
 export async function buildChecklist(
   actor: Pick<Actor, "userId" | "accountId">,
   ticker: string,
   opts: { positionSize?: number | null } = {}
 ): Promise<Checklist> {
+  return evaluateChecklist((await gatherChecklist(actor, ticker, opts)).input);
+}
+
+// The inputs the checklist reads, for the checklist itself and for the decision
+// layer, which sizes a position from the same prices, portfolio and profile.
+export async function gatherChecklist(
+  actor: Pick<Actor, "userId" | "accountId">,
+  ticker: string,
+  opts: { positionSize?: number | null } = {}
+): Promise<GatheredChecklist> {
   const company = await findCompany(ticker);
   if (!company) throw new UnknownCompanyError(ticker);
 
@@ -117,7 +134,7 @@ export async function buildChecklist(
   const thesis = theses[0];
   const annual = filings.find((f) => ANNUAL_FORMS.has(f.formType));
 
-  return evaluateChecklist({
+  const input: ChecklistInput = {
     today: new Date().toISOString().slice(0, 10),
     ticker: company.ticker,
     name: company.name,
@@ -149,7 +166,8 @@ export async function buildChecklist(
     dividendsLastYear: extra.rows[0]?.dividends ?? 0,
     cik: company.cik,
     latestAnnualFiling: annual ? { form: annual.formType, filedAt: annual.filedAt } : null,
-  });
+  };
+  return { input, companyId: company.id, heldQty: held?.qty.toNumber() ?? 0 };
 }
 
 async function sectorValue(holdings: Array<{ companyId: string; value: number }>, sector: string): Promise<number> {

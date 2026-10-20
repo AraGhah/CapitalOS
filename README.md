@@ -177,6 +177,58 @@ the same morning read the same evidence and share a cache entry; snapshots older
 than `RETENTION_SIGNAL_DAYS` (180) are trimmed. A feed that is off, blocked or
 empty shows up in the pack's coverage line as not retrieved.
 
+## The decision (`/committee/<run>`)
+
+TradingAgents ends its pipeline with a research manager, a trader and a
+portfolio manager, each a model writing a judgement. Here the three roles are
+rules over numbers the desk already measured, so a decision costs nothing to
+compute, no model is called, and the same inputs give the same decision. It sits
+at the top of every finished committee run.
+
+- **Research Manager** (`lib/decision/rating.ts`) turns the committee's eight
+  dimension scores into one of five ratings: a weighted mean (valuation 1.25,
+  news flow and macro 0.5, the rest 1) mapped onto buy ≥ 1.0, overweight ≥ 0.4,
+  hold, underweight ≤ −0.4, sell ≤ −1.0. Then it holds the rating back where a
+  mean hides the problem: Low confidence allows only hold, Medium only one tier
+  either side; a fragile balance sheet allows nothing above hold; an expensive
+  or disputed valuation, or figures the checker never found, allow nothing above
+  overweight. Fewer than 60% of the weight scored means hold. Every step that
+  moved the rating is listed with its reason.
+- **Trader** (`lib/decision/plan.ts`) draws a plan for a purchase: the last close
+  as the entry, or the 20-day average when RSI is overbought or the price is above
+  its upper Bollinger band; a stop two ATRs below the entry; and the prices at
+  which a win is 1.5, 2 and 3 times the risk. These are planning levels, **not
+  price targets**: the committee is forbidden to forecast a price and so is this
+  layer.
+- **Portfolio Manager** (`lib/decision/decide.ts`, `sizing.ts`) puts the rating
+  through your own situation and sizes it. A buy or overweight becomes an action
+  only if your pre-investment checklist is not "not ready" and no rule in an open
+  thesis is breached; an incomplete checklist or material risks halve the size.
+  The size is the lowest of six ceilings, each stated in words on the page: a
+  risk budget (the stop costs at most 0.5% / 1% / 1.5% of your capital for low /
+  medium / high risk tolerance), a position cap (5% / 8% / 10%), the loss you said
+  you could absorb, the 40% sector bar, liquidity (sellable in five sessions at
+  10% of average daily dollar volume) and the position size on your profile; then
+  scaled for conviction, an overweight (half) and a downtrend (half). Capital is
+  what you hold plus the money you set aside to invest on `/profile`.
+
+The result is one of seven actions: buy, add, hold, trim, sell, watch (not held,
+not a purchase) or avoid (not held, and something says stay out). The desk is
+long-only: an underweight cuts a holding by half, a sell exits it, and neither
+ever opens a short.
+
+Nothing is stored until you press **Record this decision**; that keeps the exact
+inputs, the digest of them and the price they were drawn at in `decisions`
+(never trimmed, and it survives the run being deleted), writes a line to the
+journal and audits it. The same inputs record once. `GET
+/api/consensus/<run>/decision` computes it, `POST` records it, `GET
+/api/decisions?ticker=` lists what you recorded, and the MCP server's
+`investment_decision` tool returns it for an agent you run yourself.
+
+```bash
+npm run migrate    # applies 0018_decisions.sql
+```
+
 ## The pre-investment checklist (`/profile`, every research page)
 
 No stock is suggested until every question an investor should ask has an
@@ -281,8 +333,8 @@ rather than by convention:
   a new row.
 - `research_notes` — every row needs a `source_id` and a verbatim `snippet`, both
   `NOT NULL`, so the database itself rejects an ungrounded claim.
-- `headlines`, `dossiers`, `chat_messages` — everything a model writes lives here
-  and nowhere else. Each headline keeps its `sources` row, and every dossier
+- `headlines`, `dossiers` (and the old `chat_messages`, no longer written) —
+  everything a model writes lives here and nowhere else. Each headline keeps its `sources` row, and every dossier
   records the exact headlines it read in `dossier_headlines`, so a verdict can be
   traced back to its evidence.
 
@@ -290,6 +342,9 @@ rather than by convention:
   `ai_memory`, `decision_journal` — the committee's output, every call behind it,
   every claim and what the checker found, and the evidence pack each run read,
   frozen with the run.
+- `decisions` — what the desk advised on a day, computed by code from a
+  committee's scores and your own checklist, profile and portfolio, with the
+  inputs it used. No model writes one.
 - `paper_trades`, `alerts`, `autopilot_runs` — simulated trades, kept apart from
   `transactions`, and what the autopilot found. Alerts are written by code
   crossing a threshold; no model writes one.

@@ -1979,6 +1979,40 @@ tr.voided td .pill {
   font-size: 0.8rem;
 }
 
+/* the five ratings, worst to best, with the committee's one lit */
+.ladder {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.ladder span {
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  color: var(--faint);
+}
+
+.ladder span.on {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.ladder span.on.up {
+  border-color: var(--up);
+  background: var(--up-soft);
+  color: var(--up);
+}
+
+.ladder span.on.down {
+  border-color: var(--down);
+  background: var(--down-soft);
+  color: var(--down);
+}
+
 .profile-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
